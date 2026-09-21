@@ -29,7 +29,7 @@ bool init(HIST *hist, int32_t min_value, int32_t max_value, uint32_t bin_width){
 }
 
 void hist_add(HIST *hist, int32_t sample){
-    if (!hist || hist->bins){
+    if (!hist || !hist->bins){
         return;
     }
 

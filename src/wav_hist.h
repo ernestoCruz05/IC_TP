@@ -32,6 +32,12 @@ typedef struct{
     uint32_t data_size;
 } WAVHEADER;
 
+typedef struct {
+    WAVHEADER header;
+    uint8_t const* data;
+    uint32_t data_length;
+} WAVFILE;
+
 int32_t calc_mid(int32_t left, int32_t right);
 int32_t calc_diff(int32_t left, int32_t right);
 
