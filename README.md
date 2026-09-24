@@ -17,12 +17,12 @@ meson compile -C build
 
 ## wav_hist
 
-O histograma é escrito no terminal e omite os bins vazios no início e no fim.
-A opção `-c` pode ser repetida e `-k` define que cada bin agrupa `2^k` valores.
+O programa gera um SVG com um painel por histograma e uma escala Y comum. A opção `-c`
+pode ser repetida e `-k` define que cada bin agrupa `2^k` valores.
 
 ```sh
-./build/src/wav_hist -c L -c MID -k 12 dataset/sample01.wav
-./build/src/wav_hist -k 12 -o histogram.txt dataset/sample01.wav
+./build/src/wav_hist dataset/sample01.wav
+./build/src/wav_hist -c L -c MID -k 4 -o out dataset/sample01.wav
 ```
 
 Para entrega/avaliação:

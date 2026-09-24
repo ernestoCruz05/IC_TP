@@ -1,30 +1,33 @@
 #include "wav_hist.h"
+#include "hist_plot.h"
 #include "wav.h"
 
 #include <errno.h>
 #include <inttypes.h>
-#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #define MAX_HISTOGRAM_BINS UINT64_C(16777216)
 
-#define CHANNEL_L    (1u << 0)
-#define CHANNEL_R    (1u << 1)
-#define CHANNEL_MID  (1u << 2)
+#define CHANNEL_L (1u << 0)
+#define CHANNEL_R (1u << 1)
+#define CHANNEL_MID (1u << 2)
 #define CHANNEL_DIFF (1u << 3)
 #define CHANNEL_MONO (1u << 4)
-#define CHANNEL_ALL  (1u << 5)
+#define CHANNEL_ALL (1u << 5)
 
 #define STEREO_CHANNELS (CHANNEL_L | CHANNEL_R | CHANNEL_MID | CHANNEL_DIFF)
 
 typedef struct {
     const char *input_path;
-    const char *output_path;
+    const char *output_dir;
     uint32_t bin_power;
     unsigned channels;
     bool channels_given;
+    bool bin_power_given;
+    bool debug;
 } OPTIONS;
 
 typedef struct {
@@ -35,18 +38,15 @@ typedef struct {
     HIST *diff;
 } HIST_TARGETS;
 
-int32_t calc_mid(int32_t left, int32_t right)
-{
+int32_t calc_mid(int32_t left, int32_t right) {
     return (int32_t)(((int64_t)left + right) / 2);
 }
 
-int32_t calc_diff(int32_t left, int32_t right)
-{
+int32_t calc_diff(int32_t left, int32_t right) {
     return (int32_t)(((int64_t)left - right) / 2);
 }
 
-size_t calc_bin(int32_t sample, int32_t min, uint64_t bin_width)
-{
+size_t calc_bin(int32_t sample, int32_t min, uint64_t bin_width) {
     if (bin_width == 0 || sample < min)
         return SIZE_MAX;
 
@@ -54,11 +54,10 @@ size_t calc_bin(int32_t sample, int32_t min, uint64_t bin_width)
 }
 
 bool init(HIST *hist, int32_t min_value, int32_t max_value,
-          uint64_t bin_width)
-{
+          uint64_t bin_width) {
     uint64_t range;
     uint64_t bin_count;
-    uint64_t *bins;
+    uint32_t *bins;
 
     if (!hist || bin_width == 0 || min_value > max_value)
         return false;
@@ -80,12 +79,11 @@ bool init(HIST *hist, int32_t min_value, int32_t max_value,
     return true;
 }
 
-void hist_add(HIST *hist, int32_t sample)
-{
+void hist_add(HIST *hist, int32_t sample) {
     size_t bin;
 
-    if (!hist || !hist->bins || sample < hist->min_val
-            || sample > hist->max_val)
+    if (!hist || !hist->bins || sample < hist->min_val ||
+        sample > hist->max_val)
         return;
 
     bin = calc_bin(sample, hist->min_val, hist->bin_width);
@@ -93,8 +91,7 @@ void hist_add(HIST *hist, int32_t sample)
         hist->bins[bin]++;
 }
 
-void hist_free(HIST *hist)
-{
+void hist_free(HIST *hist) {
     if (!hist)
         return;
 
@@ -103,77 +100,29 @@ void hist_free(HIST *hist)
     hist->bin_count = 0;
 }
 
-bool hist_print(FILE *stream, const HIST *histograms,
-                const char *const labels[], size_t count)
-{
-    const size_t bar_width = 60;
-    size_t h;
+static uint64_t hist_total(const HIST *hist) {
+    uint64_t total = 0;
+    size_t i;
 
-    if (!stream || !histograms || !labels || count == 0) {
-        errno = EINVAL;
-        return false;
-    }
-
-    for (h = 0; h < count; ++h) {
-        const HIST *hist = &histograms[h];
-        uint64_t maximum = 0;
-        size_t first = 0;
-        size_t last;
-        size_t bin;
-
-        if (!hist->bins || hist->bin_count == 0) {
-            errno = EINVAL;
-            return false;
-        }
-
-        while (first < hist->bin_count && hist->bins[first] == 0)
-            ++first;
-
-        fprintf(stream, "%s (bin width: %" PRIu64 ")\n",
-                labels[h], hist->bin_width);
-        if (first == hist->bin_count) {
-            fputs("(empty)\n", stream);
-        } else {
-            last = hist->bin_count - 1;
-            while (last > first && hist->bins[last] == 0)
-                --last;
-
-            for (bin = first; bin <= last; ++bin) {
-                if (hist->bins[bin] > maximum)
-                    maximum = hist->bins[bin];
-            }
-
-            for (bin = first; bin <= last; ++bin) {
-                uint64_t value = hist->bins[bin];
-                int64_t low = (int64_t)hist->min_val
-                        + (int64_t)((uint64_t)bin * hist->bin_width);
-                int64_t high = low + (int64_t)hist->bin_width - 1;
-                size_t length = value == 0 ? 0
-                        : (size_t)((long double)value * bar_width / maximum);
-                size_t i;
-
-                if (high > hist->max_val)
-                    high = hist->max_val;
-                if (value != 0 && length == 0)
-                    length = 1;
-
-                fprintf(stream, "bin %zu [%" PRId64 "..%" PRId64 "] | ",
-                        bin - first + 1, low, high);
-                for (i = 0; i < length; ++i)
-                    fputc('#', stream);
-                fprintf(stream, " %" PRIu64 "\n", value);
-            }
-        }
-
-        if (h + 1 < count)
-            fputc('\n', stream);
-    }
-
-    return !ferror(stream);
+    for (i = 0; i < hist->bin_count; ++i)
+        total += hist->bins[i];
+    return total;
 }
 
-static bool same_word(const char *left, const char *right)
-{
+static bool print_hist_total(const char *name, const HIST *hist,
+                             uint64_t frame_count) {
+    uint64_t total;
+
+    if (!hist)
+        return true;
+
+    total = hist_total(hist);
+    fprintf(stderr, "%s: %" PRIu64 "%s\n", name, total,
+            total == frame_count ? "" : " MISMATCH");
+    return total == frame_count;
+}
+
+static bool same_word(const char *left, const char *right) {
     while (*left && *right) {
         char a = *left;
         char b = *right;
@@ -190,8 +139,7 @@ static bool same_word(const char *left, const char *right)
     return *left == '\0' && *right == '\0';
 }
 
-static bool add_channel(OPTIONS *options, const char *name)
-{
+static bool add_channel(OPTIONS *options, const char *name) {
     unsigned channel;
 
     if (same_word(name, "l") || same_word(name, "left"))
@@ -200,7 +148,7 @@ static bool add_channel(OPTIONS *options, const char *name)
         channel = CHANNEL_R;
     else if (same_word(name, "mid"))
         channel = CHANNEL_MID;
-    else if (same_word(name, "diff") || same_word(name, "side"))
+    else if (same_word(name, "diff"))
         channel = CHANNEL_DIFF;
     else if (same_word(name, "mono"))
         channel = CHANNEL_MONO;
@@ -214,8 +162,7 @@ static bool add_channel(OPTIONS *options, const char *name)
     return true;
 }
 
-static bool parse_bin_power(const char *text, uint32_t *value)
-{
+static bool parse_bin_power(const char *text, uint32_t *value) {
     char *end;
     unsigned long parsed;
 
@@ -231,23 +178,23 @@ static bool parse_bin_power(const char *text, uint32_t *value)
     return true;
 }
 
-static void print_usage(FILE *stream, const char *program)
-{
-    fprintf(stream,
-            "Usage: %s [OPTIONS] INPUT.wav\n"
-            "Print trimmed PCM WAV histograms in the terminal.\n\n"
-            "  -c, --channel MODE     L, R, MID, DIFF, MONO, or ALL; may repeat\n"
-            "  -k, --bin-power K      group 2^K sample values per bin (default: 0)\n"
-            "  -o, --output FILE      write the histogram to a text file\n"
-            "  -h, --help             show this help\n",
-            program);
+static void print_usage(FILE *stream, const char *program) {
+    fprintf(
+        stream,
+        "Usage: %s [OPTIONS] INPUT.wav\n"
+        "Compute PCM WAV histograms and plot them as SVG images.\n\n"
+        "  -c, --channel MODE     L, R, MID, DIFF, MONO, or ALL; may repeat\n"
+        "  -k, --bin-power K      group 2^K values per bin (default: auto)\n"
+        "  -o, --output-dir DIR   output directory (default: out)\n"
+        "      --debug            print and verify histogram totals\n"
+        "  -h, --help             show this help\n",
+        program);
 }
 
-static int parse_options(int argc, char **argv, OPTIONS *options)
-{
+static int parse_options(int argc, char **argv, OPTIONS *options) {
     int i;
 
-    *options = (OPTIONS){0};
+    *options = (OPTIONS){.output_dir = "out"};
     for (i = 1; i < argc; ++i) {
         const char *argument = argv[i];
         const char *value = NULL;
@@ -257,8 +204,10 @@ static int parse_options(int argc, char **argv, OPTIONS *options)
             return 0;
         }
 
-        if (strcmp(argument, "-c") == 0
-                || strcmp(argument, "--channel") == 0) {
+        if (strcmp(argument, "--debug") == 0) {
+            options->debug = true;
+        } else if (strcmp(argument, "-c") == 0 ||
+                   strcmp(argument, "--channel") == 0) {
             if (++i >= argc) {
                 fprintf(stderr, "%s requires a value\n", argument);
                 return -1;
@@ -274,8 +223,8 @@ static int parse_options(int argc, char **argv, OPTIONS *options)
                 fprintf(stderr, "unknown channel mode: %s\n", value);
                 return -1;
             }
-        } else if (strcmp(argument, "-k") == 0
-                || strcmp(argument, "--bin-power") == 0) {
+        } else if (strcmp(argument, "-k") == 0 ||
+                   strcmp(argument, "--bin-power") == 0) {
             if (++i >= argc) {
                 fprintf(stderr, "%s requires a value\n", argument);
                 return -1;
@@ -285,23 +234,25 @@ static int parse_options(int argc, char **argv, OPTIONS *options)
                 fprintf(stderr, "invalid bin power: %s\n", value);
                 return -1;
             }
+            options->bin_power_given = true;
         } else if (strncmp(argument, "--bin-power=", 12) == 0) {
             value = argument + 12;
             if (!parse_bin_power(value, &options->bin_power)) {
                 fprintf(stderr, "invalid bin power: %s\n", value);
                 return -1;
             }
-        } else if (strcmp(argument, "-o") == 0
-                || strcmp(argument, "--output") == 0) {
+            options->bin_power_given = true;
+        } else if (strcmp(argument, "-o") == 0 ||
+                   strcmp(argument, "--output-dir") == 0) {
             if (++i >= argc) {
                 fprintf(stderr, "%s requires a value\n", argument);
                 return -1;
             }
-            options->output_path = argv[i];
-        } else if (strncmp(argument, "--output=", 9) == 0) {
-            options->output_path = argument + 9;
-            if (!options->output_path[0]) {
-                fputs("output path cannot be empty\n", stderr);
+            options->output_dir = argv[i];
+        } else if (strncmp(argument, "--output-dir=", 13) == 0) {
+            options->output_dir = argument + 13;
+            if (!options->output_dir[0]) {
+                fputs("output directory cannot be empty\n", stderr);
                 return -1;
             }
         } else if (argument[0] == '-') {
@@ -319,9 +270,8 @@ static int parse_options(int argc, char **argv, OPTIONS *options)
         fputs("an input WAV file is required\n", stderr);
         return -1;
     }
-    if (options->output_path
-            && strcmp(options->input_path, options->output_path) == 0) {
-        fputs("input and output paths must be different\n", stderr);
+    if (!options->output_dir[0]) {
+        fputs("output directory cannot be empty\n", stderr);
         return -1;
     }
     return 1;
@@ -330,8 +280,7 @@ static int parse_options(int argc, char **argv, OPTIONS *options)
 static bool add_histogram(HIST histograms[], const char *labels[],
                           size_t *count, HIST **target, const char *label,
                           int32_t min_value, int32_t max_value,
-                          uint64_t bin_width)
-{
+                          uint64_t bin_width) {
     if (!init(&histograms[*count], min_value, max_value, bin_width))
         return false;
 
@@ -341,9 +290,57 @@ static bool add_histogram(HIST histograms[], const char *labels[],
     return true;
 }
 
+static bool ensure_output_directory(const char *path) {
+    struct stat info;
+
+    if (stat(path, &info) == 0) {
+        if (S_ISDIR(info.st_mode))
+            return true;
+        errno = ENOTDIR;
+        return false;
+    }
+
+    if (errno != ENOENT)
+        return false;
+    return mkdir(path, 0775) == 0;
+}
+
+static char *make_output_path(const char *directory, const char *input_path,
+                              const char *suffix) {
+    const char *base = strrchr(input_path, '/');
+    const char *dot;
+    size_t directory_length = strlen(directory);
+    size_t base_length;
+    size_t suffix_length = strlen(suffix);
+    bool separator =
+        directory_length > 0 && directory[directory_length - 1] != '/';
+    char *path;
+    size_t position = 0;
+
+    base = base ? base + 1 : input_path;
+    dot = strrchr(base, '.');
+    base_length = dot && dot != base ? (size_t)(dot - base) : strlen(base);
+
+    path =
+        malloc(directory_length + separator + base_length + suffix_length + 6);
+    if (!path)
+        return NULL;
+
+    memcpy(path + position, directory, directory_length);
+    position += directory_length;
+    if (separator)
+        path[position++] = '/';
+    memcpy(path + position, base, base_length);
+    position += base_length;
+    path[position++] = '_';
+    memcpy(path + position, suffix, suffix_length);
+    position += suffix_length;
+    memcpy(path + position, ".svg", 5);
+    return path;
+}
+
 static bool process_audio(FILE *file, const WAV_INFO *info,
-                          const HIST_TARGETS *targets)
-{
+                          const HIST_TARGETS *targets) {
     uint64_t frame_count = info->data_size / info->block_align;
     uint64_t frame;
 
@@ -373,20 +370,19 @@ static bool process_audio(FILE *file, const WAV_INFO *info,
     return true;
 }
 
-int main(int argc, char **argv)
-{
+int main(int argc, char **argv) {
     OPTIONS options;
     WAV_INFO info;
     HIST histograms[4] = {0};
     const char *labels[4] = {0};
     HIST_TARGETS targets = {0};
     FILE *input = NULL;
-    FILE *output = NULL;
     int32_t min_value;
     int32_t max_value;
     uint64_t value_count;
     uint64_t bin_width;
     uint64_t bin_count;
+    uint64_t frame_count;
     unsigned selected;
     unsigned valid_channels;
     size_t histogram_count = 0;
@@ -421,15 +417,20 @@ int main(int argc, char **argv)
         fputs("unsupported PCM sample depth\n", stderr);
         goto cleanup;
     }
+    if (!options.bin_power_given)
+        options.bin_power =
+            info.bits_per_sample > 8 ? info.bits_per_sample - 8 : 0;
     if (options.bin_power > info.bits_per_sample) {
-        fprintf(stderr, "bin power must be between 0 and %" PRIu16
-                " for this file\n", info.bits_per_sample);
+        fprintf(stderr,
+                "bin power must be between 0 and %" PRIu16 " for this file\n",
+                info.bits_per_sample);
         goto cleanup;
     }
 
     valid_channels = info.num_channels == 1 ? CHANNEL_MONO : STEREO_CHANNELS;
     selected = (!options.channels_given || (options.channels & CHANNEL_ALL))
-            ? valid_channels : options.channels;
+                   ? valid_channels
+                   : options.channels;
     if (options.channels & ~(valid_channels | CHANNEL_ALL)) {
         fprintf(stderr, "selected channel mode is not valid for a %s file\n",
                 info.num_channels == 1 ? "mono" : "stereo");
@@ -441,42 +442,38 @@ int main(int argc, char **argv)
     bin_count = (value_count - 1) / bin_width + 1;
     if (bin_count > MAX_HISTOGRAM_BINS) {
         fprintf(stderr,
-                "histogram would require %" PRIu64
-                " bins; choose a larger K\n", bin_count);
+                "histogram would require %" PRIu64 " bins; choose a larger K\n",
+                bin_count);
         goto cleanup;
     }
 
-    if ((selected & CHANNEL_MONO)
-            && !add_histogram(histograms, labels, &histogram_count,
-                &targets.mono, "Mono", min_value, max_value, bin_width)) {
+    if ((selected & CHANNEL_MONO) &&
+        !add_histogram(histograms, labels, &histogram_count, &targets.mono,
+                       "Mono", min_value, max_value, bin_width)) {
         fputs("could not allocate the histogram\n", stderr);
         goto cleanup;
     }
-    if ((selected & CHANNEL_L)
-            && !add_histogram(histograms, labels, &histogram_count,
-                &targets.left, "Left (L)", min_value, max_value,
-                bin_width)) {
+    if ((selected & CHANNEL_L) &&
+        !add_histogram(histograms, labels, &histogram_count, &targets.left,
+                       "Left (L)", min_value, max_value, bin_width)) {
         fputs("could not allocate the left histogram\n", stderr);
         goto cleanup;
     }
-    if ((selected & CHANNEL_R)
-            && !add_histogram(histograms, labels, &histogram_count,
-                &targets.right, "Right (R)", min_value, max_value,
-                bin_width)) {
+    if ((selected & CHANNEL_R) &&
+        !add_histogram(histograms, labels, &histogram_count, &targets.right,
+                       "Right (R)", min_value, max_value, bin_width)) {
         fputs("could not allocate the right histogram\n", stderr);
         goto cleanup;
     }
-    if ((selected & CHANNEL_MID)
-            && !add_histogram(histograms, labels, &histogram_count,
-                &targets.mid, "MID: (L + R) / 2", min_value, max_value,
-                bin_width)) {
+    if ((selected & CHANNEL_MID) &&
+        !add_histogram(histograms, labels, &histogram_count, &targets.mid,
+                       "MID: (L + R) / 2", min_value, max_value, bin_width)) {
         fputs("could not allocate the MID histogram\n", stderr);
         goto cleanup;
     }
-    if ((selected & CHANNEL_DIFF)
-            && !add_histogram(histograms, labels, &histogram_count,
-                &targets.diff, "DIFF: (L - R) / 2", min_value, max_value,
-                bin_width)) {
+    if ((selected & CHANNEL_DIFF) &&
+        !add_histogram(histograms, labels, &histogram_count, &targets.diff,
+                       "DIFF: (L - R) / 2", min_value, max_value, bin_width)) {
         fputs("could not allocate the DIFF histogram\n", stderr);
         goto cleanup;
     }
@@ -492,43 +489,50 @@ int main(int argc, char **argv)
         goto cleanup;
     }
 
+    frame_count = info.data_size / info.block_align;
+    if (options.debug) {
+        bool totals_match;
+
+        fprintf(stderr, "frames: %" PRIu64 "\n", frame_count);
+        totals_match = print_hist_total("MONO", targets.mono, frame_count);
+        totals_match &= print_hist_total("L", targets.left, frame_count);
+        totals_match &= print_hist_total("R", targets.right, frame_count);
+        totals_match &= print_hist_total("MID", targets.mid, frame_count);
+        totals_match &= print_hist_total("DIFF", targets.diff, frame_count);
+        if (!totals_match)
+            goto cleanup;
+    }
+
     if (fclose(input) != 0) {
         input = NULL;
-        fprintf(stderr, "%s: failed to close input file\n",
-                options.input_path);
+        fprintf(stderr, "%s: failed to close input file\n", options.input_path);
         goto cleanup;
     }
     input = NULL;
 
-    if (options.output_path) {
-        output = fopen(options.output_path, "w");
-        if (!output) {
-            fprintf(stderr, "%s: %s\n", options.output_path,
-                    strerror(errno));
-            goto cleanup;
-        }
-    } else {
-        output = stdout;
-    }
-
-    if (!hist_print(output, histograms, labels, histogram_count)) {
-        fputs("could not print histogram\n", stderr);
+    if (!ensure_output_directory(options.output_dir)) {
+        fprintf(stderr, "%s: could not create output directory: %s\n",
+                options.output_dir, strerror(errno));
         goto cleanup;
     }
 
-    if (output == stdout) {
-        if (fflush(output) != 0) {
-            fputs("could not flush histogram output\n", stderr);
+    {
+        char *path = make_output_path(options.output_dir, options.input_path,
+                                      "histograms");
+
+        if (!path) {
+            fputs("could not allocate output path\n", stderr);
             goto cleanup;
         }
-    } else {
-        int close_result = fclose(output);
-        output = NULL;
-        if (close_result != 0) {
-            fprintf(stderr, "%s: could not finish writing output\n",
-                    options.output_path);
+        if (!hist_plot_svg(path, histograms, labels, histogram_count,
+                           options.input_path)) {
+            fprintf(stderr, "%s: could not write SVG: %s\n", path,
+                    strerror(errno));
+            free(path);
             goto cleanup;
         }
+        printf("Wrote %s\n", path);
+        free(path);
     }
 
     result = EXIT_SUCCESS;
@@ -536,8 +540,6 @@ int main(int argc, char **argv)
 cleanup:
     if (input)
         fclose(input);
-    if (output && output != stdout)
-        fclose(output);
     for (i = 0; i < histogram_count; ++i)
         hist_free(&histograms[i]);
     return result;
