@@ -5,3 +5,10 @@ wav_hist = executable(
   'wav.c',
   install: true,
 )
+
+wav_quant = executable(
+  'wav_quant',
+  'wav_quant.c',
+  'wav.c',
+  install: true,
+)

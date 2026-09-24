@@ -25,4 +25,12 @@ bool wav_read_sample(FILE *file, const WAV_INFO *info, int32_t *sample);
 bool wav_sample_range(const WAV_INFO *info, int32_t *min_value,
                       int32_t *max_value);
 
+bool write_u16_le(FILE *file, uint16_t value);
+
+bool write_u32_le(FILE *file, uint32_t value);
+
+bool wav_write_header(FILE *file, const WAV_INFO *info);
+
+bool wav_write_sample(FILE *file, const WAV_INFO *info, int32_t sample);
+
 #endif

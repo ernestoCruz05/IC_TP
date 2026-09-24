@@ -211,3 +211,96 @@ bool wav_sample_range(const WAV_INFO *info, int32_t *min_value,
         return false;
     }
 }
+
+bool write_u16_le(FILE *file, uint16_t value) {
+    uint8_t b[2];
+
+    for (int i = 0; i < 2; i++)
+        b[i] = (uint8_t)((value >> (8 * i)) & 0xff);
+    return fwrite(b, 1, sizeof b, file) == sizeof b;
+}
+
+bool write_u32_le(FILE *file, uint32_t value) {
+    uint8_t b[4];
+
+    for (int i = 0; i < 4; i++)
+        b[i] = (uint8_t)((value >> (8 * i)) & 0xff);
+
+    return fwrite(b, 1, sizeof b, file) == sizeof b;
+}
+
+bool wav_write_header(FILE *file, const WAV_INFO *info) {
+    uint32_t riff_size;
+
+    if (!file || !info)
+        return false;
+
+    riff_size = 36 + info->data_size + (info->data_size & 1u);
+
+    if (fwrite("RIFF", 1, 4, file) != 4)
+        return false;
+    if (!write_u32_le(file, riff_size))
+        return false;
+    if (fwrite("WAVE", 1, 4, file) != 4)
+        return false;
+    if (fwrite("fmt ", 1, 4, file) != 4)
+        return false;
+    if (!write_u32_le(file, 16))
+        return false;
+    if (!write_u16_le(file, info->audio_format ? info->audio_format : 1))
+        return false;
+    if (!write_u16_le(file, info->num_channels))
+        return false;
+    if (!write_u32_le(file, info->sample_rate))
+        return false;
+    if (!write_u32_le(file, info->byte_rate))
+        return false;
+    if (!write_u16_le(file, info->block_align))
+        return false;
+    if (!write_u16_le(file, info->bits_per_sample))
+        return false;
+    if (fwrite("data", 1, 4, file) != 4)
+        return false;
+    if (!write_u32_le(file, info->data_size))
+        return false;
+
+    return true;
+}
+
+bool wav_write_sample(FILE *file, const WAV_INFO *info, int32_t sample) {
+    int32_t min;
+    int32_t max;
+
+    if (!file || !info)
+        return false;
+
+    if (!wav_sample_range(info, &min, &max))
+        return false;
+
+    if (sample < min || sample > max)
+        return false;
+
+    switch (info->bits_per_sample) {
+    case 8: {
+        uint8_t u8 = sample + 128;
+        return fwrite(&u8, 1, 1, file) == 1;
+    }
+    case 16: {
+        uint16_t u16 = sample;
+        return write_u16_le(file, u16);
+    }
+    case 24: {
+        uint8_t b[3];
+        uint32_t u24 = sample;
+        for (int i = 0; i < 3; i++)
+            b[i] = (u24 >> (8 * i)) & 0xff;
+        return fwrite(b, 1, 3, file) == sizeof b;
+    }
+    case 32: {
+        uint32_t u32 = sample;
+        return write_u32_le(file, u32);
+    }
+    default:
+        return false;
+    }
+}
