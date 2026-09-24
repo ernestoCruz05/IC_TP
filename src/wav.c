@@ -9,7 +9,7 @@ static bool read_u16_le(FILE *file, uint16_t *value) {
     if (fread(b, 1, sizeof b, file) != sizeof b)
         return false;
 
-    *value = (uint16_t)b[0] | ((uint16_t)b[1] << 8);
+    *value = (uint16_t)((unsigned)b[0] | ((unsigned)b[1] << 8));
     return true;
 }
 
@@ -145,7 +145,7 @@ bool wav_parse(FILE *file, WAV_INFO *info) {
         return false;
 
     *info = parsed;
-    return wav_seek_data(file, info);
+    return true;
 }
 
 bool wav_seek_data(FILE *file, const WAV_INFO *info) {

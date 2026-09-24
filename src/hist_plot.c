@@ -116,10 +116,10 @@ static void render_histogram(FILE *file, const HIST *hist, const char *title,
     write_xml_text(file, title);
     fprintf(file,
             "</text>\n<text x=\"100\" y=\"%d\" font-size=\"13\">"
-            "bin width: %" PRIu64 " · %zu occupied-range bins",
+            "bin width: %" PRIu64 " · %zu bins in occupied range",
             panel_top + 47, hist->bin_width, visible);
     if (columns < visible)
-        fprintf(file, " · rendered in %zu groups", columns);
+        fprintf(file, " · display aggregated into %zu columns", columns);
     fputs("</text>\n", file);
 
     for (int tick = 0; tick <= 4; ++tick) {
@@ -158,7 +158,28 @@ static void render_histogram(FILE *file, const HIST *hist, const char *title,
             left, plot_top, left, plot_top + plot_height, left,
             plot_top + plot_height, left + plot_width, plot_top + plot_height);
 
+    if (range_min <= 0 && range_max >= 0) {
+        double zero_x = range_min == range_max
+                            ? left + plot_width / 2.0
+                            : left + (double)(-range_min) * plot_width /
+                                         (double)(range_max - range_min);
+        bool label_on_left = zero_x > left + plot_width - 45;
+
+        fprintf(file,
+                "<line class=\"zero-marker\" x1=\"%.3f\" y1=\"%d\" "
+                "x2=\"%.3f\" y2=\"%d\">"
+                "<title>Sample value 0</title></line>\n"
+                "<text class=\"zero-label\" x=\"%.3f\" y=\"%d\" "
+                "font-size=\"12\" text-anchor=\"%s\">0</text>\n",
+                zero_x, plot_top, zero_x, plot_top + plot_height,
+                zero_x + (label_on_left ? -5.0 : 5.0), plot_top + 16,
+                label_on_left ? "end" : "start");
+    }
+
     for (int tick = 0; tick <= 4; ++tick) {
+        if (range_min == range_max && tick != 2)
+            continue;
+
         int x = left + tick * plot_width / 4;
         int64_t value = range_min + (range_max - range_min) * tick / 4;
         fprintf(file,
@@ -220,7 +241,10 @@ bool hist_plot_svg(const char *path, const HIST histograms[],
             "<rect width=\"100%%\" height=\"100%%\" fill=\"#ffffff\"/>\n"
             "<style>text{font-family:sans-serif;fill:#111827}"
             ".grid{stroke:#e5e7eb;stroke-width:1}"
-            ".axis{stroke:#374151;stroke-width:1.5}</style>\n"
+            ".axis{stroke:#374151;stroke-width:1.5}"
+            ".zero-marker{stroke:#b91c1c;stroke-width:1.5;stroke-dasharray:5 4}"
+            ".zero-label{fill:#b91c1c;paint-order:stroke;stroke:white;"
+            "stroke-width:3}</style>\n"
             "<text x=\"100\" y=\"36\" font-size=\"24\" "
             "font-weight=\"bold\">",
             width, height, width, height);

@@ -17,7 +17,8 @@ int32_t calc_mid(int32_t left, int32_t right);
 int32_t calc_diff(int32_t left, int32_t right);
 
 size_t calc_bin(int32_t sample, int32_t min, uint64_t bin_width);
-bool init(HIST *hist, int32_t min_value, int32_t max_value, uint64_t bin_width);
+bool hist_init(HIST *hist, int32_t min_value, int32_t max_value,
+               uint64_t bin_width);
 void hist_add(HIST *hist, int32_t sample);
 void hist_free(HIST *hist);
 

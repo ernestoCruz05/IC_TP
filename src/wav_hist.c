@@ -53,8 +53,8 @@ size_t calc_bin(int32_t sample, int32_t min, uint64_t bin_width) {
     return (size_t)(((uint64_t)((int64_t)sample - min)) / bin_width);
 }
 
-bool init(HIST *hist, int32_t min_value, int32_t max_value,
-          uint64_t bin_width) {
+bool hist_init(HIST *hist, int32_t min_value, int32_t max_value,
+               uint64_t bin_width) {
     uint64_t range;
     uint64_t bin_count;
     uint32_t *bins;
@@ -281,7 +281,7 @@ static bool add_histogram(HIST histograms[], const char *labels[],
                           size_t *count, HIST **target, const char *label,
                           int32_t min_value, int32_t max_value,
                           uint64_t bin_width) {
-    if (!init(&histograms[*count], min_value, max_value, bin_width))
+    if (!hist_init(&histograms[*count], min_value, max_value, bin_width))
         return false;
 
     labels[*count] = label;
