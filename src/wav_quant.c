@@ -38,7 +38,19 @@ int32_t quant_sample(int32_t sample, unsigned int source_bits,
         return (int32_t)(storage_min + half_step + index * storage_step);
     }
 
-    return (int32_t)(storage_min + index);
+    int64_t storage_max = (INT64_C(1) << (storage_bits - 1)) - 1;
+    int64_t scale = INT64_C(1) << (source_bits - storage_bits);
+    int64_t code = sample / scale;
+    int64_t remainder = sample % scale;
+    if (remainder >= (scale + 1) / 2)
+        ++code;
+    else if (remainder <= -((scale + 1) / 2))
+        --code;
+    if (code < storage_min)
+        code = storage_min;
+    else if (code > storage_max)
+        code = storage_max;
+    return (int32_t)code;
 }
 
 static bool make_output_info(const WAV_INFO *input, unsigned int storage_bits,

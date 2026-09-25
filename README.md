@@ -67,8 +67,8 @@ o programa pede um `-k` maior em vez de ultrapassar 16 777 216 bins por canal.
 
 ## wav_quant
 
-O programa realiza quantização escalar uniforme de um ficheiro WAV, reduzindo o
-número de bits por amostra para `quant_bits` bits (`1 <= quant_bits < source_bits`):
+O programa realiza quantização escalar uniforme de um ficheiro WAV, reduzindo a
+resolução efetiva de quantização para `quant_bits` bits (`1 <= quant_bits < source_bits`):
 
 ```sh
 ./build/src/wav_quant -b BITS input.wav output.wav
@@ -84,16 +84,15 @@ contentor (`storage_bits`, `K`) é escolhido com base nos bits de quantização 
 - 17–24 bits → contentor de 24 bits
 - 25–32 bits → contentor de 32 bits
 
-A quantização segue o quantizador uniforme por ponto médio das notas da cadeira:
-determina o índice de intervalo `k` em `[0, 2^Q - 1]` a partir da amostra de entrada
-e reconstrói o valor no contentor de saída:
+A quantização determina o índice de intervalo `k` em `[0, 2^Q - 1]` a partir da
+amostra de entrada. A reconstrução no contentor de saída depende da relação entre
+`K` e `Q`:
 
 - Quando `K > Q`: o ponto médio teórico `l_k = A_min + Δ/2 + kΔ` é
   exatamente representável como inteiro no contentor, pois `Δ/2 = 2^(K-Q-1) >= 1`.
-- Quando `K = Q`: o ponto médio teórico possui parte fracionária (`0.5`) e não é
-  diretamente representável em PCM inteiro. Como compromisso explícito de representação
-  PCM para cobrir a gama válida `[-2^(K-1), 2^(K-1)-1]` sem saturação nem perda de níveis,
-  trunca-se para `floor(l_k) = A_min + k`.
+- Quando `K = Q`: cada amostra de entrada é dividida por
+  `2^(source_bits-storage_bits)`, arredondada ao código PCM mais próximo e limitada
+  à gama válida `[-2^(K-1), 2^(K-1)-1]`.
 
 O cabeçalho WAV de saída reflete os `storage_bits` escolhidos, recalculando
 `block_align`, `byte_rate` e `data_size`.
