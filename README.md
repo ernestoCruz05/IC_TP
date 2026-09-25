@@ -68,7 +68,7 @@ o programa pede um `-k` maior em vez de ultrapassar 16 777 216 bins por canal.
 ## wav_quant
 
 O programa realiza quantização escalar uniforme de um ficheiro WAV, reduzindo o
-número de bits por amostra para `quant_bits` bits ($1 \le \text{quant\_bits} < \text{source\_bits}$):
+número de bits por amostra para `quant_bits` bits (`1 <= quant_bits < source_bits`):
 
 ```sh
 ./build/src/wav_quant -b BITS input.wav output.wav
@@ -77,23 +77,23 @@ número de bits por amostra para `quant_bits` bits ($1 \le \text{quant\_bits} < 
 ### Contentor e Níveis
 
 O ficheiro de saída gerado é sempre um ficheiro WAV PCM válido. O tamanho do
-contentor (`storage_bits`, $K$) é escolhido com base nos bits de quantização ($Q$):
+contentor (`storage_bits`, `K`) é escolhido com base nos bits de quantização (`Q`):
 
-- 1–8 bits $\to$ contentor de 8 bits
-- 9–16 bits $\to$ contentor de 16 bits
-- 17–24 bits $\to$ contentor de 24 bits
-- 25–32 bits $\to$ contentor de 32 bits
+- 1–8 bits → contentor de 8 bits
+- 9–16 bits → contentor de 16 bits
+- 17–24 bits → contentor de 24 bits
+- 25–32 bits → contentor de 32 bits
 
 A quantização segue o quantizador uniforme por ponto médio das notas da cadeira:
-determina o índice de intervalo $k \in [0, 2^Q - 1]$ a partir da amostra de entrada
+determina o índice de intervalo `k` em `[0, 2^Q - 1]` a partir da amostra de entrada
 e reconstrói o valor no contentor de saída:
 
-- Quando $K > Q$: o ponto médio teórico $l_k = A_{min} + \Delta/2 + k\Delta$ é
-  exatamente representável como inteiro no contentor, pois $\Delta/2 = 2^{K-Q-1} \ge 1$.
-- Quando $K = Q$: o ponto médio teórico possui parte fracionária ($0.5$) e não é
+- Quando `K > Q`: o ponto médio teórico `l_k = A_min + Δ/2 + kΔ` é
+  exatamente representável como inteiro no contentor, pois `Δ/2 = 2^(K-Q-1) >= 1`.
+- Quando `K = Q`: o ponto médio teórico possui parte fracionária (`0.5`) e não é
   diretamente representável em PCM inteiro. Como compromisso explícito de representação
-  PCM para cobrir a gama válida $[-2^{K-1}, 2^{K-1}-1]$ sem saturação nem perda de níveis,
-  trunca-se para $\lfloor l_k \rfloor = A_{min} + k$.
+  PCM para cobrir a gama válida `[-2^(K-1), 2^(K-1)-1]` sem saturação nem perda de níveis,
+  trunca-se para `floor(l_k) = A_min + k`.
 
 O cabeçalho WAV de saída reflete os `storage_bits` escolhidos, recalculando
 `block_align`, `byte_rate` e `data_size`.
