@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-int32_t quant_sample(int32_t sample, unsigned source_bits,
-                     unsigned target_bits);
+int32_t quant_sample(int32_t sample, unsigned int source_bits,
+                     unsigned int quant_bits, unsigned int storage_bits);
 
 #endif

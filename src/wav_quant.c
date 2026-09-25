@@ -8,33 +8,40 @@
 #include <stdlib.h>
 #include <string.h>
 
-static bool supported_width(unsigned int bits) {
-    return bits == 8 || bits == 16 || bits == 24 || bits == 32;
+static unsigned int choose_container_bits(unsigned int quant_bits) {
+    if (quant_bits <= 8)
+        return 8;
+    if (quant_bits <= 16)
+        return 16;
+    if (quant_bits <= 24)
+        return 24;
+    return 32;
 }
 
 int32_t quant_sample(int32_t sample, unsigned int source_bits,
-                     unsigned int target_bits) {
-    int64_t step = INT64_C(1) << (source_bits - target_bits);
-    int64_t quantized = (int64_t)sample / step;
-    int64_t remainder = (int64_t)sample % step;
-    int64_t half_step = step / 2;
-    int64_t target_min = -(INT64_C(1) << (target_bits - 1));
-    int64_t target_max = (INT64_C(1) << (target_bits - 1)) - 1;
+                     unsigned int quant_bits, unsigned int storage_bits) {
+    int64_t source_min = -(INT64_C(1) << (source_bits - 1));
+    int64_t step = INT64_C(1) << (source_bits - quant_bits);
+    int64_t offset = (int64_t)sample - source_min;
+    int64_t index = offset / step;
+    int64_t max_index = (INT64_C(1) << quant_bits) - 1;
 
-    if (remainder >= half_step)
-        ++quantized;
-    else if (remainder <= -half_step)
-        --quantized;
+    if (index < 0)
+        index = 0;
+    else if (index > max_index)
+        index = max_index;
 
-    if (quantized < target_min)
-        quantized = target_min;
-    else if (quantized > target_max)
-        quantized = target_max;
+    int64_t storage_min = -(INT64_C(1) << (storage_bits - 1));
+    if (storage_bits > quant_bits) {
+        int64_t storage_step = INT64_C(1) << (storage_bits - quant_bits);
+        int64_t half_step = storage_step / 2;
+        return (int32_t)(storage_min + half_step + index * storage_step);
+    }
 
-    return (int32_t)quantized;
+    return (int32_t)(storage_min + index);
 }
 
-static bool make_output_info(const WAV_INFO *input, unsigned int target_bits,
+static bool make_output_info(const WAV_INFO *input, unsigned int storage_bits,
                              WAV_INFO *output, uint64_t *frame_count) {
     uint64_t frames;
     uint64_t output_block_align;
@@ -46,7 +53,7 @@ static bool make_output_info(const WAV_INFO *input, unsigned int target_bits,
         return false;
 
     frames = input->data_size / input->block_align;
-    output_block_align = (uint64_t)input->num_channels * (target_bits / 8);
+    output_block_align = (uint64_t)input->num_channels * (storage_bits / 8);
     output_byte_rate = (uint64_t)input->sample_rate * output_block_align;
     output_data_size = frames * output_block_align;
 
@@ -55,7 +62,7 @@ static bool make_output_info(const WAV_INFO *input, unsigned int target_bits,
         return false;
 
     *output = *input;
-    output->bits_per_sample = (uint16_t)target_bits;
+    output->bits_per_sample = (uint16_t)storage_bits;
     output->block_align = (uint16_t)output_block_align;
     output->byte_rate = (uint32_t)output_byte_rate;
     output->data_size = (uint32_t)output_data_size;
@@ -69,6 +76,9 @@ int main(int argc, char **argv) {
     uint64_t frame_count;
     uint64_t total_samples;
     unsigned long bits;
+    unsigned int source_bits;
+    unsigned int quant_bits;
+    unsigned int storage_bits;
     char *end;
     const char *input_path;
     const char *output_path;
@@ -88,9 +98,9 @@ int main(int argc, char **argv) {
 
     errno = 0;
     bits = strtoul(argv[2], &end, 10);
-    if (*argv[2] == '\0' || *end != '\0' || errno == ERANGE || bits > 32 ||
-        !supported_width((unsigned int)bits)) {
-        fprintf(stderr, "BITS must be one of 8, 16, 24, or 32\n");
+    if (*argv[2] == '\0' || *end != '\0' || errno == ERANGE || bits == 0 ||
+        bits > 32) {
+        fprintf(stderr, "BITS must be an integer between 1 and 32\n");
         return EXIT_FAILURE;
     }
 
@@ -112,14 +122,18 @@ int main(int argc, char **argv) {
         goto cleanup;
     }
 
-    if (bits >= input_info.bits_per_sample) {
+    source_bits = input_info.bits_per_sample;
+    quant_bits = (unsigned int)bits;
+    if (quant_bits >= source_bits) {
         fprintf(stderr,
-                "Target bits (%lu) must be less than the source bits (%u)\n",
-                bits, (unsigned)input_info.bits_per_sample);
+                "Target bits (%u) must be less than the source bits (%u)\n",
+                quant_bits, source_bits);
         goto cleanup;
     }
 
-    if (!make_output_info(&input_info, (unsigned int)bits, &output_info,
+    storage_bits = choose_container_bits(quant_bits);
+
+    if (!make_output_info(&input_info, storage_bits, &output_info,
                           &frame_count)) {
         fprintf(stderr, "Could not calculate output WAV metadata\n");
         goto cleanup;
@@ -151,8 +165,7 @@ int main(int argc, char **argv) {
             goto cleanup;
         }
 
-        quantized = quant_sample(sample, input_info.bits_per_sample,
-                                 output_info.bits_per_sample);
+        quantized = quant_sample(sample, source_bits, quant_bits, storage_bits);
         if (!wav_write_sample(out, &output_info, quantized)) {
             fprintf(stderr, "Failed to write sample %" PRIu64 "\n", i);
             goto cleanup;

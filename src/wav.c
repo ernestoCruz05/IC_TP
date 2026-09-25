@@ -282,22 +282,22 @@ bool wav_write_sample(FILE *file, const WAV_INFO *info, int32_t sample) {
 
     switch (info->bits_per_sample) {
     case 8: {
-        uint8_t u8 = sample + 128;
+        uint8_t u8 = (uint8_t)(sample + 128);
         return fwrite(&u8, 1, 1, file) == 1;
     }
     case 16: {
-        uint16_t u16 = sample;
+        uint16_t u16 = (uint16_t)sample;
         return write_u16_le(file, u16);
     }
     case 24: {
         uint8_t b[3];
-        uint32_t u24 = sample;
+        uint32_t u24 = (uint32_t)sample;
         for (int i = 0; i < 3; i++)
-            b[i] = (u24 >> (8 * i)) & 0xff;
+            b[i] = (uint8_t)((u24 >> (8 * i)) & 0xff);
         return fwrite(b, 1, 3, file) == sizeof b;
     }
     case 32: {
-        uint32_t u32 = sample;
+        uint32_t u32 = (uint32_t)sample;
         return write_u32_le(file, u32);
     }
     default:
