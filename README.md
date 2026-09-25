@@ -97,6 +97,19 @@ amostra de entrada. A reconstrução no contentor de saída depende da relação
 O cabeçalho WAV de saída reflete os `storage_bits` escolhidos, recalculando
 `block_align`, `byte_rate` e `data_size`.
 
+## wav_cmp
+
+Compara dois ficheiros WAV (original e processado/quantizado), imprimindo para
+cada canal e para o sinal médio (MID):
+
+- Erro quadrático médio (MSE / L2) e RMSE
+- Erro máximo absoluto por amostra (L∞)
+- Relação sinal-ruído (SNR em dB)
+
+```sh
+./build/src/wav_cmp original.wav test.wav
+```
+
 Para entrega/avaliação:
 
 ```sh

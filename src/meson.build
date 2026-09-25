@@ -12,3 +12,11 @@ wav_quant = executable(
   'wav.c',
   install: true,
 )
+
+wav_cmp = executable(
+  'wav_cmp',
+  'wav_cmp.c',
+  'wav.c',
+  dependencies: m_dep,
+  install: true,
+)
