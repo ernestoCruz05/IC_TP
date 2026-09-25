@@ -14,18 +14,24 @@ static bool supported_width(unsigned int bits) {
 
 int32_t quant_sample(int32_t sample, unsigned int source_bits,
                      unsigned int target_bits) {
-    int64_t source_min = -(INT64_C(1) << (source_bits - 1));
-    int64_t target_min = -(INT64_C(1) << (target_bits - 1));
     int64_t step = INT64_C(1) << (source_bits - target_bits);
-    int64_t index = ((int64_t)sample - source_min) / step;
-    int64_t max_index = (INT64_C(1) << target_bits) - 1;
+    int64_t quantized = (int64_t)sample / step;
+    int64_t remainder = (int64_t)sample % step;
+    int64_t half_step = step / 2;
+    int64_t target_min = -(INT64_C(1) << (target_bits - 1));
+    int64_t target_max = (INT64_C(1) << (target_bits - 1)) - 1;
 
-    if (index < 0)
-        index = 0;
-    else if (index > max_index)
-        index = max_index;
+    if (remainder >= half_step)
+        ++quantized;
+    else if (remainder <= -half_step)
+        --quantized;
 
-    return (int32_t)(target_min + index);
+    if (quantized < target_min)
+        quantized = target_min;
+    else if (quantized > target_max)
+        quantized = target_max;
+
+    return (int32_t)quantized;
 }
 
 static bool make_output_info(const WAV_INFO *input, unsigned int target_bits,
