@@ -20,3 +20,11 @@ wav_cmp = executable(
   dependencies: m_dep,
   install: true,
 )
+
+wav_effects = executable(
+  'wav_effects',
+  'wav_effects.c',
+  'wav.c',
+  dependencies: m_dep,
+  install: true,
+)
