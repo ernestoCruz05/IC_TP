@@ -116,3 +116,38 @@ Para entrega/avaliação:
 meson setup build-release --buildtype=release
 meson compile -C build-release
 ```
+
+
+
+## wav_effects
+
+Aplica efeitos de áudio a um ficheiro WAV, produzindo um ficheiro WAV
+PCM válido com o mesmo `sample_rate`, número de canais e `bits_per_sample`
+que tinha o original. Todas as amostras são carregadas para memória antes de o
+efeito ser aplicado.
+
+```sh
+./build/src/wav_effects -e reverse input.wav output.wav
+./build/src/wav_effects -e echo -d SECONDS -g GAIN [-r REPEATS] input.wav output.wav
+./build/src/wav_effects -e amod -f HZ -p DEPTH input.wav output.wav
+```
+
+### Efeitos disponíveis
+
+- **reverse**: inverte a ordem dos frames do ficheiro (não altera as
+  amostras, só a sua ordem).
+- **echo**: soma ao sinal original uma ou mais cópias atrasadas e
+  progressivamente atenuadas.
+  - `-d SECONDS` (default `0.3`): atraso de cada eco, em segundos.
+  - `-g GAIN` (default `0.5`): fator de atenuação de cada repetição
+    (`0 < gain < 1`); cada eco sucessivo é atenuado por `gain^r`.
+  - `-r REPEATS` (default `1`): número de ecos somados. `1` corresponde a
+    um único eco.
+  - O eco é calculado a partir do sinal original.
+- **amod**: modulação de amplitude, multiplicando cada amostra por
+  `1 + depth * sin(2π * freq_hz * t)`.
+  - `-f HZ` (default `5.0`): frequência da modulação, em Hz.
+  - `-p DEPTH` (default `0.5`): profundidade do efeito (`0 <= depth <= 1` para evitar inversão de fase).
+
+Todas as amostras resultantes são limitadas (`clipping`) à gama válida do
+`bits_per_sample` do ficheiro de entrada antes de serem escritas.
