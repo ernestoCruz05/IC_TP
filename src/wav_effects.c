@@ -207,6 +207,11 @@ int main(int argc, char **argv) {
         effect_reverse(samples, frame_count, info.num_channels);
         output_samples = samples;
     } else if (strcmp(effect_name, "echo") == 0) {
+        if (delay_seconds <= 0.0) {
+            fputs("Delay must be greater than 0\n", stderr);
+            goto cleanup;
+        }
+
         uint64_t delay_frames = (uint64_t)(delay_seconds * info.sample_rate);
 
         if (delay_frames == 0) {
