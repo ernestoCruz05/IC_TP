@@ -176,8 +176,10 @@ Os restantes ficheiros, como WAV com float, RF64 ou mais de 8 canais, são
 guardados sem compressão. O codificador avisa no stderr e o descodificador
 reconstrói-os da mesma forma.
 
-Cada canal de um bloco é guardado como um valor constante, quando todas as
-amostras são iguais, ou com as amostras sem compressão.
+Cada bloco seleciona dinamicamente entre canais independentes e descorrelação
+estéreo Mid-Side reversível (com floor division). Cada canal/stream escolhe a
+representação com menor custo em bits: valor constante, verbatim, ou predição
+linear fixa (ordens 0 a 4) com resíduos codificados por Golomb-Rice ótimo.
 
 O ficheiro comprimido termina com o CRC-32 do ficheiro original. O
 descodificador falha se o CRC não coincidir, se o ficheiro estiver truncado ou
