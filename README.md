@@ -151,3 +151,34 @@ efeito ser aplicado.
 
 Todas as amostras resultantes são limitadas (`clipping`) à gama válida do
 `bits_per_sample` do ficheiro de entrada antes de serem escritas.
+
+## wav_lossless
+
+`wav_lossless_enc` comprime um ficheiro WAV sem perdas e `wav_lossless_dec`
+reconstrói o ficheiro original, byte a byte.
+
+```sh
+./build/src/wav_lossless_enc [-b BLOCK_SIZE] input.wav compressed_file
+./build/src/wav_lossless_dec compressed_file output.wav
+```
+
+`-b` define o número de frames por bloco, de 16 a 65535 (4096 por omissão).
+
+### O que é comprimido
+
+São comprimidos os ficheiros que o `wav_parse()` aceita e que tenham de 1 a 8
+canais: PCM inteiro de 8, 16, 24 ou 32 bits, no formato clássico ou
+extensible. Só o payload do chunk `data` é comprimido. Os bytes antes e depois
+dele, incluindo outros chunks, o byte de padding e bytes para lá do fim do
+RIFF, são copiados sem alterações.
+
+Os restantes ficheiros, como WAV com float, RF64 ou mais de 8 canais, são
+guardados sem compressão. O codificador avisa no stderr e o descodificador
+reconstrói-os da mesma forma.
+
+Cada canal de um bloco é guardado como um valor constante, quando todas as
+amostras são iguais, ou com as amostras sem compressão.
+
+O ficheiro comprimido termina com o CRC-32 do ficheiro original. O
+descodificador falha se o CRC não coincidir, se o ficheiro estiver truncado ou
+se algum bloco for inválido; nesse caso, apaga o ficheiro de saída.

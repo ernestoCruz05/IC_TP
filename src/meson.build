@@ -28,3 +28,24 @@ wav_effects = executable(
   dependencies: m_dep,
   install: true,
 )
+
+subdir('lossless')
+
+wav_lossless_enc = executable(
+  'wav_lossless_enc',
+  'wav_lossless_enc.c',
+  'wav.c',
+  c_args: lossless_args,
+  dependencies: lossless_dep,
+  override_options: ['werror=true'],
+  install: true,
+)
+
+wav_lossless_dec = executable(
+  'wav_lossless_dec',
+  'wav_lossless_dec.c',
+  c_args: lossless_args,
+  dependencies: lossless_dep,
+  override_options: ['werror=true'],
+  install: true,
+)
