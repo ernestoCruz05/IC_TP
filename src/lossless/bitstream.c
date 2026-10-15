@@ -127,36 +127,47 @@ int64_t bit_read_signed(BIT_READER *r, unsigned int bits) {
     return -(int64_t)(~value & (sign - 1)) - 1;
 }
 
+static unsigned int bit_length(uint64_t value) {
+    static const uint8_t lengths[256] = {
+        0, 1, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5, 5,
+        5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
+        6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 7, 7,
+        7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+        7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+        7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 8, 8, 8, 8,
+        8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8,
+        8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8,
+        8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8,
+        8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8,
+        8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8,
+        8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8,
+    };
+
+    return lengths[value & 0xffu];
+}
+
 uint64_t bit_read_unary(BIT_READER *r) {
     uint64_t q = 0;
+    unsigned int length;
 
     if (r->error)
         return 0;
 
-    for (;;) {
-        if (r->count == 0) {
-            if (r->pos >= r->size) {
-                r->error = true;
-                return 0;
-            }
-            r->acc = r->data[r->pos++];
-            r->count = 8;
+    while (r->acc == 0) {
+        q += r->count;
+        if (r->pos >= r->size) {
+            r->error = true;
+            return 0;
         }
-
-        if (r->acc == 0) {
-            q += r->count;
-            r->count = 0;
-            continue;
-        }
-
-        while ((r->acc >> (r->count - 1)) == 0) {
-            ++q;
-            --r->count;
-        }
-        --r->count;
-        r->acc &= low_mask(r->count);
-        return q;
+        r->acc = r->data[r->pos++];
+        r->count = 8;
     }
+
+    length = bit_length(r->acc);
+    q += r->count - length;
+    r->count = length - 1;
+    r->acc &= low_mask(r->count);
+    return q;
 }
 
 bool bit_reader_finish(const BIT_READER *r) {

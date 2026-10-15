@@ -1,4 +1,6 @@
 #include "lossless.h"
+#include "lpc.h"
+#include "rice.h"
 #include "wav.h"
 
 #include <errno.h>
@@ -14,7 +16,9 @@ typedef struct {
 } OPTIONS;
 
 static void print_usage(FILE *stream, const char *program) {
-    fprintf(stream, "Usage: %s [-b BLOCK_SIZE] input.wav compressed_file\n",
+    fprintf(stream,
+            "Usage: %s [-b BLOCK_SIZE] [-l LPC_ORDER] [-q PRECISION] "
+            "[-p PARTITION_ORDER] [-j THREADS] input.wav compressed_file\n",
             program);
 }
 
@@ -38,22 +42,52 @@ static bool parse_unsigned(const char *text, unsigned long min,
 static bool parse_options(int argc, char **argv, OPTIONS *options) {
     int i = 1;
 
-    *options = (OPTIONS){.codec = {.block_size = LOSSLESS_DEFAULT_BLOCK_SIZE}};
+    *options = (OPTIONS){
+        .codec = {.block_size = LOSSLESS_DEFAULT_BLOCK_SIZE,
+                  .block = {.max_lpc_order = LOSSLESS_DEFAULT_LPC_ORDER,
+                            .lpc_precision = LOSSLESS_DEFAULT_LPC_PRECISION,
+                            .max_partition_order =
+                                LOSSLESS_DEFAULT_PARTITION_ORDER},
+                  .threads = lossless_default_threads()}};
 
     while (i < argc && argv[i][0] == '-' && argv[i][1] != '\0') {
-        if (strcmp(argv[i], "-b") != 0) {
-            fprintf(stderr, "Unknown option: %s\n", argv[i]);
+        const char *flag = argv[i];
+        unsigned int *value;
+        unsigned long min;
+        unsigned long max;
+
+        if (strcmp(flag, "-b") == 0) {
+            value = &options->codec.block_size;
+            min = LOSSLESS_MIN_BLOCK_SIZE;
+            max = LOSSLESS_MAX_BLOCK_SIZE;
+        } else if (strcmp(flag, "-l") == 0) {
+            value = &options->codec.block.max_lpc_order;
+            min = 0;
+            max = LPC_MAX_ORDER;
+        } else if (strcmp(flag, "-q") == 0) {
+            value = &options->codec.block.lpc_precision;
+            min = LOSSLESS_MIN_LPC_PRECISION;
+            max = LPC_MAX_PRECISION;
+        } else if (strcmp(flag, "-p") == 0) {
+            value = &options->codec.block.max_partition_order;
+            min = 0;
+            max = RICE_MAX_PARTITION_ORDER;
+        } else if (strcmp(flag, "-j") == 0) {
+            value = &options->codec.threads;
+            min = 1;
+            max = LOSSLESS_MAX_THREADS;
+        } else {
+            fprintf(stderr, "Unknown option: %s\n", flag);
             return false;
         }
+
         if (i + 1 >= argc) {
-            fprintf(stderr, "Option %s needs a value\n", argv[i]);
+            fprintf(stderr, "Option %s needs a value\n", flag);
             return false;
         }
-        if (!parse_unsigned(argv[i + 1], LOSSLESS_MIN_BLOCK_SIZE,
-                            LOSSLESS_MAX_BLOCK_SIZE,
-                            &options->codec.block_size)) {
-            fprintf(stderr, "BLOCK_SIZE must be an integer between %d and %d\n",
-                    LOSSLESS_MIN_BLOCK_SIZE, LOSSLESS_MAX_BLOCK_SIZE);
+        if (!parse_unsigned(argv[i + 1], min, max, value)) {
+            fprintf(stderr, "%s must be an integer between %lu and %lu\n",
+                    flag, min, max);
             return false;
         }
         i += 2;

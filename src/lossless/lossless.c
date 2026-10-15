@@ -3,14 +3,18 @@
 #include "block.h"
 #include "crc32.h"
 
+#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #define FORMAT_VERSION 1
 #define HEADER_SIZE 34
 #define BLOCK_HEADER_SIZE 6
 #define CRC_SIZE 4
 #define COPY_SIZE 65536
+#define BLOCKS_PER_THREAD 4
+#define BATCH_MEMORY ((size_t)64 << 20u)
 
 enum { MODE_STORED, MODE_PCM };
 
@@ -120,103 +124,236 @@ static bool header_unpack(const uint8_t *p, HEADER *h, const char **error) {
     return false;
 }
 
-static bool encode_blocks(FILE *in, FILE *out, const HEADER *h, uint32_t *crc,
+typedef struct {
+    BLOCK_FORMAT format;
+    const BLOCK_OPTIONS *options;
+    size_t pcm_capacity;
+    size_t payload_capacity;
+    size_t capacity;
+    size_t count;
+    unsigned int threads;
+    uint8_t *pcm;
+    uint8_t *payload;
+    size_t *pcm_sizes;
+    size_t *payload_sizes;
+    bool *ok;
+    BLOCK_WORK **works;
+} BATCH;
+
+typedef struct {
+    BATCH *batch;
+    unsigned int index;
+} WORKER;
+
+static void batch_finish(BATCH *b) {
+    if (b->works) {
+        for (unsigned int t = 0; t < b->threads; ++t)
+            block_work_destroy(b->works[t]);
+    }
+    free(b->works);
+    free(b->ok);
+    free(b->payload_sizes);
+    free(b->pcm_sizes);
+    free(b->payload);
+    free(b->pcm);
+}
+
+static bool batch_init(BATCH *b, const HEADER *h, const BLOCK_OPTIONS *options,
+                       unsigned int threads, uint64_t frames) {
+    uint64_t blocks = (frames + h->block_size - 1) / h->block_size;
+    size_t slot;
+
+    *b = (BATCH){.format = {h->channels, h->bits, h->block_size},
+                 .options = options};
+    b->pcm_capacity = (size_t)h->channels * (h->bits / 8) * h->block_size;
+    b->payload_capacity = block_payload_bound(&b->format, h->block_size);
+    slot = b->pcm_capacity + b->payload_capacity;
+
+    b->capacity = (size_t)threads * BLOCKS_PER_THREAD;
+    while (b->capacity > threads && b->capacity * slot > BATCH_MEMORY)
+        --b->capacity;
+    if (b->capacity > blocks)
+        b->capacity = (size_t)blocks;
+    b->threads = threads < b->capacity ? threads : (unsigned int)b->capacity;
+
+    b->pcm = malloc(b->capacity * b->pcm_capacity);
+    b->payload = malloc(b->capacity * b->payload_capacity);
+    b->pcm_sizes = malloc(b->capacity * sizeof(*b->pcm_sizes));
+    b->payload_sizes = malloc(b->capacity * sizeof(*b->payload_sizes));
+    b->ok = malloc(b->capacity * sizeof(*b->ok));
+    b->works = calloc(b->threads, sizeof(*b->works));
+    if (!b->pcm || !b->payload || !b->pcm_sizes || !b->payload_sizes ||
+        !b->ok || !b->works)
+        return false;
+
+    for (unsigned int t = 0; t < b->threads; ++t) {
+        b->works[t] = block_work_create(&b->format);
+        if (!b->works[t])
+            return false;
+    }
+    return true;
+}
+
+static void *batch_worker(void *arg) {
+    WORKER *worker = arg;
+    BATCH *b = worker->batch;
+    BLOCK_WORK *work = b->works[worker->index];
+
+    for (size_t i = worker->index; i < b->count; i += b->threads) {
+        uint8_t *pcm = b->pcm + i * b->pcm_capacity;
+        uint8_t *payload = b->payload + i * b->payload_capacity;
+
+        if (b->options)
+            b->ok[i] = block_encode(work, b->options, pcm, b->pcm_sizes[i],
+                                    payload, b->payload_capacity,
+                                    &b->payload_sizes[i]);
+        else
+            b->ok[i] = block_decode(work, payload, b->payload_sizes[i], pcm,
+                                    b->pcm_sizes[i]);
+    }
+    return NULL;
+}
+
+static void batch_run(BATCH *b) {
+    WORKER workers[LOSSLESS_MAX_THREADS];
+    pthread_t ids[LOSSLESS_MAX_THREADS];
+    bool started[LOSSLESS_MAX_THREADS] = {false};
+    unsigned int active =
+        b->count < b->threads ? (unsigned int)b->count : b->threads;
+
+    for (unsigned int t = 0; t < active; ++t) {
+        workers[t] = (WORKER){b, t};
+        if (t > 0)
+            started[t] =
+                pthread_create(&ids[t], NULL, batch_worker, &workers[t]) == 0;
+    }
+
+    if (active > 0)
+        (void)batch_worker(&workers[0]);
+    for (unsigned int t = 1; t < active; ++t) {
+        if (started[t])
+            (void)pthread_join(ids[t], NULL);
+        else
+            (void)batch_worker(&workers[t]);
+    }
+}
+
+static bool encode_blocks(FILE *in, FILE *out, const HEADER *h,
+                          const LOSSLESS_OPTIONS *options, uint32_t *crc,
                           const char **error) {
-    BLOCK_FORMAT format = {h->channels, h->bits, h->block_size};
     size_t frame_bytes = (size_t)h->channels * (h->bits / 8);
-    size_t capacity = block_payload_bound(&format, h->block_size);
     uint64_t frames_left = h->pcm_size / frame_bytes;
-    uint8_t *pcm = malloc(frame_bytes * h->block_size);
-    uint8_t *block = malloc(BLOCK_HEADER_SIZE + capacity);
-    BLOCK_WORK *work = block_work_create(&format);
+    BATCH batch;
     bool ok = false;
 
-    if (!pcm || !block || !work) {
+    if (frames_left == 0)
+        return true;
+
+    if (!batch_init(&batch, h, &options->block, options->threads,
+                    frames_left)) {
         *error = "out of memory";
         goto cleanup;
     }
 
     while (frames_left > 0) {
-        size_t frames =
-            frames_left < h->block_size ? (size_t)frames_left : h->block_size;
-        size_t pcm_size = frames * frame_bytes;
-        size_t size;
+        for (batch.count = 0; batch.count < batch.capacity && frames_left > 0;
+             ++batch.count) {
+            size_t i = batch.count;
+            size_t frames = frames_left < h->block_size ? (size_t)frames_left
+                                                        : h->block_size;
+            uint8_t *pcm = batch.pcm + i * batch.pcm_capacity;
 
-        if (!read_exact(in, pcm, pcm_size, error))
-            goto cleanup;
-        *crc = crc32_update(*crc, pcm, pcm_size);
-
-        if (!block_encode(work, pcm, pcm_size, block + BLOCK_HEADER_SIZE,
-                          capacity, &size)) {
-            *error = "block encoding failed";
-            goto cleanup;
+            batch.pcm_sizes[i] = frames * frame_bytes;
+            if (!read_exact(in, pcm, batch.pcm_sizes[i], error))
+                goto cleanup;
+            *crc = crc32_update(*crc, pcm, batch.pcm_sizes[i]);
+            frames_left -= frames;
         }
-        put_le(block, size, 4);
-        put_le(block + 4, frames, 2);
-        if (!write_exact(out, block, BLOCK_HEADER_SIZE + size, error))
-            goto cleanup;
 
-        frames_left -= frames;
+        batch_run(&batch);
+
+        for (size_t i = 0; i < batch.count; ++i) {
+            uint8_t block[BLOCK_HEADER_SIZE];
+
+            if (!batch.ok[i]) {
+                *error = "block encoding failed";
+                goto cleanup;
+            }
+            put_le(block, batch.payload_sizes[i], 4);
+            put_le(block + 4, batch.pcm_sizes[i] / frame_bytes, 2);
+            if (!write_exact(out, block, sizeof block, error) ||
+                !write_exact(out, batch.payload + i * batch.payload_capacity,
+                             batch.payload_sizes[i], error))
+                goto cleanup;
+        }
     }
     ok = true;
 
 cleanup:
-    block_work_destroy(work);
-    free(block);
-    free(pcm);
+    batch_finish(&batch);
     return ok;
 }
 
-static bool decode_blocks(FILE *in, FILE *out, const HEADER *h, uint32_t *crc,
+static bool decode_blocks(FILE *in, FILE *out, const HEADER *h,
+                          unsigned int threads, uint32_t *crc,
                           const char **error) {
-    BLOCK_FORMAT format = {h->channels, h->bits, h->block_size};
     size_t frame_bytes = (size_t)h->channels * (h->bits / 8);
     uint64_t frames_left = h->pcm_size / frame_bytes;
-    uint8_t *pcm = malloc(frame_bytes * h->block_size);
-    uint8_t *payload = malloc(block_payload_bound(&format, h->block_size));
-    BLOCK_WORK *work = block_work_create(&format);
+    BATCH batch;
     bool ok = false;
 
-    if (!pcm || !payload || !work) {
+    if (frames_left == 0)
+        return true;
+
+    if (!batch_init(&batch, h, NULL, threads, frames_left)) {
         *error = "out of memory";
         goto cleanup;
     }
 
     while (frames_left > 0) {
-        size_t frames =
-            frames_left < h->block_size ? (size_t)frames_left : h->block_size;
-        size_t pcm_size = frames * frame_bytes;
-        uint8_t block[BLOCK_HEADER_SIZE];
-        uint64_t size;
+        for (batch.count = 0; batch.count < batch.capacity && frames_left > 0;
+             ++batch.count) {
+            size_t i = batch.count;
+            size_t frames = frames_left < h->block_size ? (size_t)frames_left
+                                                        : h->block_size;
+            uint8_t block[BLOCK_HEADER_SIZE];
+            uint64_t size;
 
-        if (!read_exact(in, block, sizeof block, error))
-            goto cleanup;
-        size = get_le(block, 4);
-        if (get_le(block + 4, 2) != frames ||
-            size > block_payload_bound(&format, frames)) {
-            *error = "corrupt block header";
-            goto cleanup;
+            if (!read_exact(in, block, sizeof block, error))
+                goto cleanup;
+            size = get_le(block, 4);
+            if (get_le(block + 4, 2) != frames ||
+                size > block_payload_bound(&batch.format, frames)) {
+                *error = "corrupt block header";
+                goto cleanup;
+            }
+            if (!read_exact(in, batch.payload + i * batch.payload_capacity,
+                            (size_t)size, error))
+                goto cleanup;
+
+            batch.payload_sizes[i] = (size_t)size;
+            batch.pcm_sizes[i] = frames * frame_bytes;
+            frames_left -= frames;
         }
 
-        if (!read_exact(in, payload, (size_t)size, error))
-            goto cleanup;
-        if (!block_decode(work, payload, (size_t)size, pcm, pcm_size)) {
-            *error = "corrupt block";
-            goto cleanup;
+        batch_run(&batch);
+
+        for (size_t i = 0; i < batch.count; ++i) {
+            uint8_t *pcm = batch.pcm + i * batch.pcm_capacity;
+
+            if (!batch.ok[i]) {
+                *error = "corrupt block";
+                goto cleanup;
+            }
+            *crc = crc32_update(*crc, pcm, batch.pcm_sizes[i]);
+            if (!write_exact(out, pcm, batch.pcm_sizes[i], error))
+                goto cleanup;
         }
-
-        *crc = crc32_update(*crc, pcm, pcm_size);
-        if (!write_exact(out, pcm, pcm_size, error))
-            goto cleanup;
-
-        frames_left -= frames;
     }
     ok = true;
 
 cleanup:
-    block_work_destroy(work);
-    free(payload);
-    free(pcm);
+    batch_finish(&batch);
     return ok;
 }
 
@@ -228,6 +365,11 @@ bool lossless_encode(FILE *in, const LOSSLESS_SOURCE *source,
     uint8_t *buffer = NULL;
     uint32_t crc = 0;
     bool ok = false;
+
+    if (options->threads == 0 || options->threads > LOSSLESS_MAX_THREADS) {
+        *error = "invalid thread count";
+        return false;
+    }
 
     if (source->channels == 0) {
         header.mode = MODE_STORED;
@@ -266,7 +408,7 @@ bool lossless_encode(FILE *in, const LOSSLESS_SOURCE *source,
     if (!copy_bytes(in, out, header.prefix_size, buffer, &crc, error))
         goto cleanup;
     if (header.mode == MODE_PCM &&
-        !encode_blocks(in, out, &header, &crc, error))
+        !encode_blocks(in, out, &header, options, &crc, error))
         goto cleanup;
     if (!copy_bytes(in, out, header.suffix_size, buffer, &crc, error))
         goto cleanup;
@@ -279,12 +421,18 @@ cleanup:
     return ok;
 }
 
-bool lossless_decode(FILE *in, FILE *out, const char **error) {
+bool lossless_decode(FILE *in, FILE *out, unsigned int threads,
+                     const char **error) {
     HEADER header = {0};
     uint8_t bytes[HEADER_SIZE];
     uint8_t *buffer = NULL;
     uint32_t crc = 0;
     bool ok = false;
+
+    if (threads == 0 || threads > LOSSLESS_MAX_THREADS) {
+        *error = "invalid thread count";
+        return false;
+    }
 
     if (!read_exact(in, bytes, HEADER_SIZE, error) ||
         !header_unpack(bytes, &header, error))
@@ -299,7 +447,7 @@ bool lossless_decode(FILE *in, FILE *out, const char **error) {
     if (!copy_bytes(in, out, header.prefix_size, buffer, &crc, error))
         goto cleanup;
     if (header.mode == MODE_PCM &&
-        !decode_blocks(in, out, &header, &crc, error))
+        !decode_blocks(in, out, &header, threads, &crc, error))
         goto cleanup;
     if (!copy_bytes(in, out, header.suffix_size, buffer, &crc, error))
         goto cleanup;
@@ -323,4 +471,13 @@ bool lossless_decode(FILE *in, FILE *out, const char **error) {
 cleanup:
     free(buffer);
     return ok;
+}
+
+unsigned int lossless_default_threads(void) {
+    long count = sysconf(_SC_NPROCESSORS_ONLN);
+
+    if (count < 1)
+        return 1;
+    return count > LOSSLESS_MAX_THREADS ? LOSSLESS_MAX_THREADS
+                                        : (unsigned int)count;
 }
