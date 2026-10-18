@@ -49,3 +49,25 @@ wav_lossless_dec = executable(
   override_options: ['werror=true'],
   install: true,
 )
+
+wav_lossy_enc = executable(
+  'wav_lossy_enc',
+  'wav_lossy_enc.c',
+  'lossy/dct.c',
+  'wav.c',
+  c_args: lossless_args,
+  dependencies: lossless_dep,
+  override_options: ['werror=true'],
+  install: true,
+)
+
+wav_lossy_dec = executable(
+  'wav_lossy_dec',
+  'wav_lossy_dec.c',
+  'lossy/dct.c',
+  'wav.c',
+  c_args: lossless_args,
+  dependencies: lossless_dep,
+  override_options: ['werror=true'],
+  install: true,
+)
