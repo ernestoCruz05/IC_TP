@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Compare the project DCT-II codec with FFmpeg's libmp3lame encoder.
-
-Use --target-bitrates to evaluate wav_lossy's target-rate search. Encoding
-times in that mode include the repeated trial encodes used to select q.
-"""
+"""Compare fixed-quality wav_lossy encodes with FFmpeg's libmp3lame encoder."""
 
 import argparse
 import math
@@ -148,17 +144,14 @@ def main():
     parser.add_argument("--dec", default="build-rel/src/wav_lossy_dec")
     parser.add_argument("--ffmpeg", default="ffmpeg")
     parser.add_argument("--runs", type=int, default=1)
-    parser.add_argument("--n", type=int, default=1024)
-    parser.add_argument("--q", type=int, default=64)
-    parser.add_argument("--target-bitrates", default="",
-                        help="comma-separated wav_lossy target rates in kbps")
+    parser.add_argument("--n", type=int, default=2048)
+    parser.add_argument("--qualities", default="64",
+                        help="comma-separated wav_lossy q values (0..240)")
     parser.add_argument("--bitrates", default="256k,320k")
     parser.add_argument("files", nargs="+", type=Path)
     args = parser.parse_args()
     if args.runs < 1 or args.n < 256 or args.n > 4096 or args.n & (args.n - 1):
         parser.error("runs must be positive and n must be a power of two from 256 to 4096")
-    if not 0 <= args.q <= 240:
-        parser.error("q must be between 0 and 240")
     for binary in (args.enc, args.dec, args.ffmpeg):
         if not (Path(binary).is_file() if "/" in binary else shutil.which(binary)):
             parser.error(f"executable not found: {binary}")
@@ -169,12 +162,12 @@ def main():
     if not bitrates:
         parser.error("provide at least one MP3 bitrate")
     try:
-        target_bitrates = [int(item.strip()) for item in
-                           args.target_bitrates.split(",") if item.strip()]
+        qualities = [int(item.strip()) for item in
+                     args.qualities.split(",") if item.strip()]
     except ValueError:
-        parser.error("wav_lossy target bitrates must be comma-separated integers")
-    if any(rate < 8 or rate > 100000 for rate in target_bitrates):
-        parser.error("wav_lossy target bitrates must be between 8 and 100000 kbps")
+        parser.error("wav_lossy qualities must be comma-separated integers")
+    if not qualities or any(q < 0 or q > 240 for q in qualities):
+        parser.error("provide q values between 0 and 240")
     original_size = sum(path.stat().st_size for path in files)
     duration = 0.0
     for path in files:
@@ -204,17 +197,12 @@ def main():
     results = []
     with tempfile.TemporaryDirectory(prefix="bench-lossy-") as temp:
         work = Path(temp)
-        results.append(run_candidate(
-            f"wav_lossy DCT-II N={args.n} q={args.q}", files, work, args.runs,
-            lambda source, target: [args.enc, "-n", str(args.n),
-                                    "-q", str(args.q), str(source), str(target)],
-            lambda source, target: [args.dec, str(source), str(target)], gnu_time))
-        for target_bitrate in target_bitrates:
+        for quality in qualities:
             results.append(run_candidate(
-                f"wav_lossy DCT-II N={args.n} target={target_bitrate} kbps",
+                f"wav_lossy DCT-II N={args.n} q={quality}",
                 files, work, args.runs,
-                lambda source, target, rate=target_bitrate: [
-                    args.enc, "-n", str(args.n), "-b", str(rate),
+                lambda source, target, q=quality: [
+                    args.enc, "-n", str(args.n), "-q", str(q),
                     str(source), str(target)],
                 lambda source, target: [args.dec, str(source), str(target)], gnu_time))
         for bitrate in bitrates:

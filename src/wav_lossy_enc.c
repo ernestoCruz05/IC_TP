@@ -12,7 +12,7 @@
 #include <string.h>
 
 #define HEADER_SIZE 24u
-#define DEFAULT_N 256u
+#define DEFAULT_N 2048u
 #define DEFAULT_G 64u
 #define TRANSFORM_DCT2 1u
 
@@ -22,7 +22,7 @@ static void put_le(uint8_t *p, uint64_t value, unsigned bytes) {
 }
 
 static int encode(FILE *in, FILE *out, const WAV_INFO *info, unsigned n,
-                  unsigned g, unsigned trial_stride) {
+                  unsigned g) {
     uint8_t header[HEADER_SIZE] = {0};
     uint64_t frames = info->data_size / info->block_align;
     uint64_t block_count = (frames + n - 1) / n;
@@ -58,7 +58,6 @@ static int encode(FILE *in, FILE *out, const WAV_INFO *info, unsigned n,
         uint32_t block_size;
         BIT_WRITER writer;
         size_t input_length = n;
-        if (trial_stride > 1 && block % trial_stride != 0) continue;
         memset(pcm, 0, input_length * info->num_channels * sizeof(*pcm));
         count = (size_t)((frames - block * n) < n ?
                          frames - block * n : n);
@@ -100,15 +99,6 @@ done:
     return ok;
 }
 
-static long double estimate_full_size(long trial_size, uint64_t block_count,
-                                     unsigned stride) {
-    uint64_t sampled_blocks = (block_count + stride - 1) / stride;
-    const long double fixed_size = HEADER_SIZE + 4.0L;
-    if (trial_size < (long)fixed_size || sampled_blocks == 0) return INFINITY;
-    return fixed_size + ((long double)trial_size - fixed_size) *
-                        (long double)block_count / (long double)sampled_blocks;
-}
-
 static int parse_uint(const char *s, unsigned long low, unsigned long high,
                       unsigned long *out) {
     char *end;
@@ -123,11 +113,10 @@ static int parse_uint(const char *s, unsigned long low, unsigned long high,
 }
 
 int main(int argc, char **argv) {
-    unsigned long n = DEFAULT_N, g = DEFAULT_G, bitrate = 0;
+    unsigned long n = DEFAULT_N, g = DEFAULT_G;
     const char *input_path = NULL, *output_path = NULL;
     FILE *in = NULL, *out = NULL;
     WAV_INFO info;
-    int q_seen = 0, b_seen = 0;
     int result = EXIT_FAILURE;
     int arg = 1;
 
@@ -140,16 +129,11 @@ int main(int argc, char **argv) {
             n = value;
         } else if (strcmp(argv[arg], "-q") == 0) {
             if (!parse_uint(argv[arg + 1], 0, 240, &g)) goto usage;
-            q_seen = 1;
-        } else if (strcmp(argv[arg], "-b") == 0) {
-            if (!parse_uint(argv[arg + 1], 8, 100000, &bitrate)) goto usage;
-            b_seen = 1;
         } else {
             goto usage;
         }
         arg += 2;
     }
-    if (q_seen && b_seen) goto usage;
     if (argc - arg != 2) goto usage;
     input_path = argv[arg]; output_path = argv[arg + 1];
     if (strcmp(input_path, output_path) == 0) goto usage;
@@ -159,113 +143,14 @@ int main(int argc, char **argv) {
         fprintf(stderr, "%s: unsupported or invalid PCM WAV\n", input_path);
         goto done;
     }
-    if (b_seen && info.data_size == 0) {
-        fprintf(stderr, "%s: cannot target a bitrate for an empty WAV\n",
-                input_path);
-        goto done;
-    }
     out = fopen(output_path, "wb");
     if (!out) goto done;
-    if (b_seen) {
-        uint64_t frames = info.data_size / info.block_align;
-        uint64_t blocks = (frames + n - 1) / n;
-        unsigned stride = (unsigned)((blocks + 15) / 16);
-        if (stride == 0) stride = 1;
-        long double duration = (long double)frames / info.sample_rate;
-        long double target_bytes = (long double)bitrate * 1000.0L * duration / 8.0L;
-        unsigned low = 0, high = 240, best_g = 0;
-        long double best_distance = INFINITY;
-        /* Binary search the monotonic quality/size curve, then compare its
-           two neighbours to account for whole-byte rounding. */
-        for (unsigned attempt = 0; attempt < 9; ++attempt) {
-            unsigned candidate = low + (high - low) / 2;
-            FILE *trial = tmpfile();
-            long trial_size;
-            if (!trial || !encode(in, trial, &info, (unsigned)n, candidate,
-                                  stride) ||
-                (trial_size = ftell(trial)) < 0) {
-                if (trial) fclose(trial);
-                goto done;
-            }
-            fclose(trial);
-            long double estimate = estimate_full_size(trial_size, blocks, stride);
-            long double distance = fabsl(estimate - target_bytes);
-            if (distance < best_distance) { best_distance = distance; best_g = candidate; }
-            if (estimate > target_bytes) {
-                if (candidate == 0) break;
-                high = candidate - 1;
-            } else {
-                if (candidate == 240) break;
-                low = candidate + 1;
-            }
-            if (low > high) break;
-        }
-        for (int offset = -1; offset <= 1; ++offset) {
-            long candidate = (long)best_g + offset;
-            if (candidate < 0 || candidate > 240) continue;
-            FILE *trial = tmpfile();
-            long trial_size;
-            if (!trial || !encode(in, trial, &info, (unsigned)n,
-                                  (unsigned)candidate, stride) ||
-                (trial_size = ftell(trial)) < 0) {
-                if (trial) fclose(trial);
-                goto done;
-            }
-            fclose(trial);
-            long double estimate = estimate_full_size(trial_size, blocks, stride);
-            long double distance = fabsl(estimate - target_bytes);
-            if (distance < best_distance) { best_distance = distance; best_g = (unsigned)candidate; }
-        }
-        /* Check the sampled estimate against a full encode. If sampling
-           missed an atypical region, walk q one step at a time while the
-           complete output gets closer to the requested size. */
-        {
-            FILE *trial = tmpfile();
-            long actual_size;
-            if (!trial || !encode(in, trial, &info, (unsigned)n, best_g, 1) ||
-                (actual_size = ftell(trial)) < 0) {
-                if (trial) fclose(trial);
-                goto done;
-            }
-            fclose(trial);
-            best_distance = fabsl((long double)actual_size - target_bytes);
-            for (unsigned attempt = 0; attempt < 4; ++attempt) {
-                long candidate = (long)best_g +
-                                 ((long double)actual_size > target_bytes ? -1 : 1);
-                long candidate_size;
-                if (candidate < 0 || candidate > 240) break;
-                trial = tmpfile();
-                if (!trial || !encode(in, trial, &info, (unsigned)n,
-                                      (unsigned)candidate, 1) ||
-                    (candidate_size = ftell(trial)) < 0) {
-                    if (trial) fclose(trial);
-                    goto done;
-                }
-                fclose(trial);
-                long double candidate_distance =
-                    fabsl((long double)candidate_size - target_bytes);
-                if (candidate_distance >= best_distance) break;
-                best_g = (unsigned)candidate;
-                actual_size = candidate_size;
-                best_distance = candidate_distance;
-            }
-        }
-        if (!encode(in, out, &info, (unsigned)n, best_g, 1)) goto done;
-        long output_size = ftell(out);
-        if (output_size < 0) goto done;
-        long double actual_rate = (long double)output_size * 8.0L *
-                                 info.sample_rate /
-                                 ((long double)frames * 1000.0L);
-        fprintf(stderr, "Target: %lu kbps; selected q=%u; achieved %.2Lf kbps\n",
-                bitrate, best_g, actual_rate);
-    } else if (!encode(in, out, &info, (unsigned)n, (unsigned)g, 1)) {
-        goto done;
-    }
+    if (!encode(in, out, &info, (unsigned)n, (unsigned)g)) goto done;
     result = EXIT_SUCCESS;
     goto done;
 
 usage:
-    fprintf(stderr, "Usage: %s [-n 256..4096] ([-q 0..240] | [-b 8..100000 kbps]) input.wav compressed_file\n", argv[0]);
+    fprintf(stderr, "Usage: %s [-n 256..4096] [-q 0..240] input.wav compressed_file\n", argv[0]);
 done:
     if (in) fclose(in);
     if (out && fclose(out) != 0) result = EXIT_FAILURE;

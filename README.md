@@ -244,66 +244,75 @@ O flac descodifica sempre com uma thread.
 
 ## wav_lossy
 
-Usa DCT-II ortonormal em blocos independentes. Os coeficientes quantizados são
-codificados com Rice; a saída preserva a frequência, os canais, a profundidade
-PCM e a duração do WAV.
+Aplica DCT-II a blocos de áudio e guarda os coeficientes quantizados com Rice.
+A descodificação mantém a frequência, os canais, a profundidade PCM e a duração.
 
 ```sh
-./build/src/wav_lossy_enc [-n BLOCK_SIZE] ([-q QUALITY] | [-b KBPS]) input.wav compressed_file
+./build/src/wav_lossy_enc [-n BLOCK_SIZE] [-q QUALITY] input.wav compressed_file
 ./build/src/wav_lossy_dec compressed_file output.wav
 ```
 
-- `-n`: tamanho do bloco, potência de dois entre 256 e 4096 (default 256).
+- `-n`: tamanho do bloco, potência de dois entre 256 e 4096 (default 2048).
 - `-q`: índice do passo de quantização, entre 0 e 240 (default 64). Valores
   maiores usam um passo menor e tendem a preservar melhor a qualidade.
-- `-b`: taxa média alvo em kilobits por segundo (8 a 100000). O encoder procura
-  um valor de quantização que produza um ficheiro perto do tamanho alvo. Como
-  a codificação é por blocos e o tamanho varia em bytes inteiros, a taxa final
-  pode diferir do alvo. `-b` e `-q` não podem ser usados juntos.
 
-O formato comprimido é experimental e pode mudar. A versão inicial aceita PCM
-inteiro de 8, 16, 24 ou 32 bits, de 1 a 8 canais. Chunks WAV adicionais não são
-preservados na saída descodificada.
+O formato ainda pode mudar. São aceites WAV PCM inteiro de 8, 16, 24 ou 32 bits
+e de 1 a 8 canais. Outros chunks WAV não são preservados.
 
 ### Comparação com MP3
 
-O script `scripts/bench_lossy.py` compara o codec DCT-II com MP3 CBR via FFmpeg/libmp3lame.
-Calcula o SNR agregado a partir das energias do sinal e do erro, confirma canais,
-frequência e número de frames e mede tempos e pico de memória com GNU `time`.
+O script `scripts/bench_lossy.py` compara o codec com MP3 CBR através do FFmpeg
+com `libmp3lame`. Verifica os WAV descodificados e mede tamanho, SNR, tempos e
+memória.
 
 ```sh
 meson setup build-rel --buildtype=release -Db_lto=true
 meson compile -C build-rel
-python3 scripts/bench_lossy.py --runs 3 --n 1024 --q 64 \
-    --bitrates 256k,320k dataset/*.wav
-```
-
-Para comparar também o controlo por taxa alvo do `wav_lossy`:
-
-```sh
 python3 scripts/bench_lossy.py --runs 1 --n 256 \
-    --target-bitrates 128,192,256,320 \
-    --bitrates 128k,192k,256k,320k dataset/*.wav
+    --qualities 32,48,64 \
+    --bitrates 160k,224k,320k dataset/*.wav
 ```
 
-Os bitrates MP3 devem enquadrar a taxa média do codec próprio para permitir uma
-comparação rate-distortion. O script usa uma thread no FFmpeg e inclui tags MP3
-no tamanho medido. Necessita de FFmpeg compilado com `libmp3lame`. Os tempos de
-codificação com `--target-bitrates` incluem as codificações temporárias que o
-encoder executa para procurar o passo `q`; não são diretamente comparáveis com
-uma única passagem de codificação MP3.
+Cada valor de `--qualities` é comparado com uma taxa MP3 próxima da taxa média
+resultante. O FFmpeg usa uma thread e o tamanho MP3 inclui as tags. É necessário
+ter `libmp3lame` disponível no FFmpeg.
 
-Medição de referência nos 7 WAVs de `dataset/` (25 300 772 bytes, 143,43 s) num Intel Core i7-10750H, FFmpeg 6.1.1, uma execução por ficheiro:
+Medição de referência nos 7 WAVs de `dataset/` (25 300 772 bytes, 143,43 s),
+Intel Core i7-10750H, FFmpeg 6.1.1, uma execução por ficheiro:
 
 | Codec | Tamanho | Ratio | Taxa média | Codificação | Descodificação | RSS cod./desc. | SNR L/R/MID |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| wav_lossy DCT-II, alvo 128 kbps | 2 293 741 B | 9,07% | 127,9 kbps | 3,030 s | 0,905 s | 2,3 / 2,1 MiB | 14,84 / 13,76 / 15,89 dB |
-| MP3 CBR 128 kbps | 2 302 425 B | 9,10% | 128,4 kbps | 2,583 s | 0,438 s | 51,5 / 50,9 MiB | 18,43 / 17,90 / 19,66 dB |
-| wav_lossy DCT-II, alvo 192 kbps | 3 431 582 B | 13,56% | 191,4 kbps | 3,789 s | 0,909 s | 2,4 / 2,1 MiB | 24,52 / 23,36 / 25,74 dB |
-| MP3 CBR 192 kbps | 3 453 484 B | 13,65% | 192,6 kbps | 2,571 s | 0,459 s | 51,5 / 51,0 MiB | 23,64 / 23,14 / 25,44 dB |
-| wav_lossy DCT-II, alvo 256 kbps | 4 567 164 B | 18,05% | 254,7 kbps | 3,808 s | 0,934 s | 2,4 / 2,1 MiB | 31,88 / 30,73 / 33,19 dB |
-| MP3 CBR 256 kbps | 4 604 545 B | 18,20% | 256,8 kbps | 2,702 s | 0,459 s | 51,3 / 51,0 MiB | 28,91 / 27,98 / 30,79 dB |
-| wav_lossy DCT-II, alvo 320 kbps | 5 754 505 B | 22,74% | 321,0 kbps | 3,775 s | 0,990 s | 2,4 / 2,1 MiB | 38,10 / 36,98 / 39,50 dB |
-| MP3 CBR 320 kbps | 5 755 604 B | 22,75% | 321,0 kbps | 2,754 s | 0,476 s | 51,6 / 50,9 MiB | 33,29 / 32,27 / 35,20 dB |
+| wav_lossy DCT-II N=256 q=32 | 2 723 847 B | 10,77% | 151,9 kbps | 0,924 s | 0,923 s | 2,2 / 2,1 MiB | 23,23 / 22,19 / 24,63 dB |
+| MP3 CBR 160 kbps | 2 877 962 B | 11,37% | 160,5 kbps | 3,006 s | 0,453 s | 51,7 / 51,2 MiB | 20,54 / 20,10 / 22,02 dB |
+| wav_lossy DCT-II N=256 q=48 | 3 864 452 B | 15,27% | 215,5 kbps | 0,875 s | 0,935 s | 2,2 / 2,1 MiB | 33,42 / 32,35 / 34,93 dB |
+| MP3 CBR 224 kbps | 4 029 020 B | 15,92% | 224,7 kbps | 2,787 s | 0,477 s | 51,7 / 51,2 MiB | 26,12 / 25,53 / 27,93 dB |
+| wav_lossy DCT-II N=256 q=64 | 5 499 424 B | 21,74% | 306,7 kbps | 0,965 s | 0,967 s | 2,2 / 2,2 MiB | 44,27 / 43,21 / 45,84 dB |
+| MP3 CBR 320 kbps | 5 755 604 B | 22,75% | 321,0 kbps | 2,633 s | 0,491 s | 51,8 / 51,2 MiB | 33,29 / 32,27 / 35,20 dB |
 
-A DCT-II foi otimizada com uma FFT, reduzindo o custo por bloco de quadrático para `O(N log N)`.
+### Efeito do tamanho do bloco
+
+Teste dos cinco tamanhos de bloco com `q=64` nos mesmos sete WAVs. Os tempos
+são a soma de uma execução por ficheiro; o RSS é o pico máximo. O SNR é agregado.
+
+| N | Tamanho | Ratio | Taxa média | Codificação | Descodificação | RSS cod./desc. | SNR L/R/MID |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 256 | 5 499 424 B | 21,74% | 306,7 kbps | 0,917 s | 0,934 s | 2,2 / 2,1 MiB | 44,27 / 43,21 / 45,84 dB |
+| 512 | 5 262 174 B | 20,80% | 293,5 kbps | 0,942 s | 0,971 s | 2,2 / 2,2 MiB | 44,32 / 43,26 / 45,89 dB |
+| 1024 | 5 117 699 B | 20,23% | 285,5 kbps | 1,001 s | 0,956 s | 2,2 / 2,1 MiB | 44,34 / 43,29 / 45,92 dB |
+| 2048 | 5 048 234 B | 19,95% | 281,6 kbps | 1,028 s | 0,981 s | 2,2 / 2,1 MiB | 44,34 / 43,28 / 45,92 dB |
+| 4096 | 5 060 699 B | 20,00% | 282,3 kbps | 1,127 s | 1,119 s | 2,3 / 2,2 MiB | 44,29 / 43,24 / 45,88 dB |
+
+`N=2048` deu o ficheiro mais pequeno e o melhor SNR MID (empatado com `N=1024`).
+Face a `N=256`, reduziu o tamanho cerca de 8,2%; a codificação demorou mais
+0,111 s e a descodificação mais 0,047 s. `N=4096` não trouxe melhoria. Escolhi
+`N=2048` como valor por omissão com base nestes testes.
+
+As taxas dos pares são próximas. O SNR MID do `wav_lossy` foi superior em 2,61,
+7,00 e 10,64 dB, respetivamente. Nestas medições, codificou mais depressa e
+descodificou mais devagar que o MP3. O RSS do MP3 inclui o processo FFmpeg.
+
+Com `N=2048` e `q=64`, a taxa foi 281,6 kbps e o SNR MID 45,92 dB. O parâmetro
+`-q` permite trocar tamanho por qualidade: nos testes com `N=256`, q=80 deu
+57,06 dB a 426,1 kbps e q=96 deu 68,54 dB a 571,8 kbps. Os resultados são de
+uma execução nos ficheiros usados e podem variar com outros áudios. A DCT-II
+usa uma FFT, com custo `O(N log N)` por bloco.
