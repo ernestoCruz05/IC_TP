@@ -129,12 +129,15 @@ def megabytes(kilobytes):
 
 def measure(encode, decode, files, work, runs):
     result = {"size": 0, "encode": 0.0, "decode": 0.0, "encode_rss": None,
-              "decode_rss": None, "exact": True, "error": None}
+              "decode_rss": None, "exact": True, "error": None,
+              "per_file": {}}
     packed = work / "packed.wv"
     restored = work / "restored.wav"
     for path in files:
         best_encode = float("inf")
         best_decode = float("inf")
+        file_encode_rss = None
+        file_decode_rss = None
         try:
             for _ in range(runs):
                 packed.unlink(missing_ok=True)
@@ -142,9 +145,11 @@ def measure(encode, decode, files, work, runs):
                 elapsed, rss = run(*encode(path, packed), work / "rss")
                 best_encode = min(best_encode, elapsed)
                 result["encode_rss"] = larger(result["encode_rss"], rss)
+                file_encode_rss = larger(file_encode_rss, rss)
                 elapsed, rss = run(*decode(packed, restored), work / "rss")
                 best_decode = min(best_decode, elapsed)
                 result["decode_rss"] = larger(result["decode_rss"], rss)
+                file_decode_rss = larger(file_decode_rss, rss)
                 filecmp.clear_cache()
                 if not filecmp.cmp(path, restored, shallow=False):
                     result["exact"] = False
@@ -155,6 +160,14 @@ def measure(encode, decode, files, work, runs):
             return result
         result["encode"] += best_encode
         result["decode"] += best_decode
+        result["per_file"][path.name] = {
+            "size": packed.stat().st_size,
+            "original": path.stat().st_size,
+            "encode": best_encode,
+            "decode": best_decode,
+            "encode_rss": file_encode_rss,
+            "decode_rss": file_decode_rss,
+        }
     return result
 
 
@@ -237,6 +250,21 @@ def main():
               f"| {r['encode']:.3f} | {r['decode']:.3f} "
               f"| {megabytes(r['encode_rss'])} | {megabytes(r['decode_rss'])} "
               f"| {'exact' if r['exact'] else 'differs'} |")
+
+    print("\nPer-file results (size and ratio are for that WAV only):")
+    for path in args.files:
+        print(f"\n### {path.name} ({path.stat().st_size} original bytes)")
+        print("| Tool | Size (bytes) | Ratio | Encode (s) | Decode (s) | "
+              "Encode RSS (MiB) | Decode RSS (MiB) | Round trip |")
+        print("|---|---:|---:|---:|---:|---:|---:|---|")
+        for name, r in results:
+            item = r["per_file"].get(path.name)
+            if item is None:
+                continue
+            print(f"| {name} | {item['size']} | {ratio(item['size'], item['original'])} "
+                  f"| {item['encode']:.3f} | {item['decode']:.3f} "
+                  f"| {megabytes(item['encode_rss'])} "
+                  f"| {megabytes(item['decode_rss'])} | exact |")
 
     for name, r in failed:
         print(f"\n{name}: {r['error']}")

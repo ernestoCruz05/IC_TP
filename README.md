@@ -241,3 +241,69 @@ Resultados nos 7 ficheiros de `dataset/` (25 300 772 bytes), num Ryzen 5 7535HS:
 | gzip -9 | 89,68% | 0,843 | 0,148 |
 
 O flac descodifica sempre com uma thread.
+
+## wav_lossy
+
+Usa DCT-II ortonormal em blocos independentes. Os coeficientes quantizados são
+codificados com Rice; a saída preserva a frequência, os canais, a profundidade
+PCM e a duração do WAV.
+
+```sh
+./build/src/wav_lossy_enc [-n BLOCK_SIZE] ([-q QUALITY] | [-b KBPS]) input.wav compressed_file
+./build/src/wav_lossy_dec compressed_file output.wav
+```
+
+- `-n`: tamanho do bloco, potência de dois entre 256 e 4096 (default 256).
+- `-q`: índice do passo de quantização, entre 0 e 240 (default 64). Valores
+  maiores usam um passo menor e tendem a preservar melhor a qualidade.
+- `-b`: taxa média alvo em kilobits por segundo (8 a 100000). O encoder procura
+  um valor de quantização que produza um ficheiro perto do tamanho alvo. Como
+  a codificação é por blocos e o tamanho varia em bytes inteiros, a taxa final
+  pode diferir do alvo. `-b` e `-q` não podem ser usados juntos.
+
+O formato comprimido é experimental e pode mudar. A versão inicial aceita PCM
+inteiro de 8, 16, 24 ou 32 bits, de 1 a 8 canais. Chunks WAV adicionais não são
+preservados na saída descodificada.
+
+### Comparação com MP3
+
+O script `scripts/bench_lossy.py` compara o codec DCT-II com MP3 CBR via FFmpeg/libmp3lame.
+Calcula o SNR agregado a partir das energias do sinal e do erro, confirma canais,
+frequência e número de frames e mede tempos e pico de memória com GNU `time`.
+
+```sh
+meson setup build-rel --buildtype=release -Db_lto=true
+meson compile -C build-rel
+python3 scripts/bench_lossy.py --runs 3 --n 1024 --q 64 \
+    --bitrates 256k,320k dataset/*.wav
+```
+
+Para comparar também o controlo por taxa alvo do `wav_lossy`:
+
+```sh
+python3 scripts/bench_lossy.py --runs 1 --n 256 \
+    --target-bitrates 128,192,256,320 \
+    --bitrates 128k,192k,256k,320k dataset/*.wav
+```
+
+Os bitrates MP3 devem enquadrar a taxa média do codec próprio para permitir uma
+comparação rate-distortion. O script usa uma thread no FFmpeg e inclui tags MP3
+no tamanho medido. Necessita de FFmpeg compilado com `libmp3lame`. Os tempos de
+codificação com `--target-bitrates` incluem as codificações temporárias que o
+encoder executa para procurar o passo `q`; não são diretamente comparáveis com
+uma única passagem de codificação MP3.
+
+Medição de referência nos 7 WAVs de `dataset/` (25 300 772 bytes, 143,43 s) num Intel Core i7-10750H, FFmpeg 6.1.1, uma execução por ficheiro:
+
+| Codec | Tamanho | Ratio | Taxa média | Codificação | Descodificação | RSS cod./desc. | SNR L/R/MID |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| wav_lossy DCT-II, alvo 128 kbps | 2 293 741 B | 9,07% | 127,9 kbps | 3,030 s | 0,905 s | 2,3 / 2,1 MiB | 14,84 / 13,76 / 15,89 dB |
+| MP3 CBR 128 kbps | 2 302 425 B | 9,10% | 128,4 kbps | 2,583 s | 0,438 s | 51,5 / 50,9 MiB | 18,43 / 17,90 / 19,66 dB |
+| wav_lossy DCT-II, alvo 192 kbps | 3 431 582 B | 13,56% | 191,4 kbps | 3,789 s | 0,909 s | 2,4 / 2,1 MiB | 24,52 / 23,36 / 25,74 dB |
+| MP3 CBR 192 kbps | 3 453 484 B | 13,65% | 192,6 kbps | 2,571 s | 0,459 s | 51,5 / 51,0 MiB | 23,64 / 23,14 / 25,44 dB |
+| wav_lossy DCT-II, alvo 256 kbps | 4 567 164 B | 18,05% | 254,7 kbps | 3,808 s | 0,934 s | 2,4 / 2,1 MiB | 31,88 / 30,73 / 33,19 dB |
+| MP3 CBR 256 kbps | 4 604 545 B | 18,20% | 256,8 kbps | 2,702 s | 0,459 s | 51,3 / 51,0 MiB | 28,91 / 27,98 / 30,79 dB |
+| wav_lossy DCT-II, alvo 320 kbps | 5 754 505 B | 22,74% | 321,0 kbps | 3,775 s | 0,990 s | 2,4 / 2,1 MiB | 38,10 / 36,98 / 39,50 dB |
+| MP3 CBR 320 kbps | 5 755 604 B | 22,75% | 321,0 kbps | 2,754 s | 0,476 s | 51,6 / 50,9 MiB | 33,29 / 32,27 / 35,20 dB |
+
+A DCT-II foi otimizada com uma FFT, reduzindo o custo por bloco de quadrático para `O(N log N)`.
