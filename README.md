@@ -2,6 +2,9 @@
 
 Enunciado: [`trab1.pdf`](trab1.pdf).
 
+Este repositório contém também o Trabalho 2, organizado separadamente em
+[`trab2/`](trab2/README.md). O Trabalho 1 continua na raiz do repositório.
+
 ## Dependências
 
 - Compilador de C17 (GCC/Clang)
