@@ -5,8 +5,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
-#define GRAY_LEVELS 256 //pixel de 8 bits pode ter val de 0 a 255
 #define TOKEN_CAPACITY 64 //espaço max para guardar um el do cabeçalho
 
 // ideia geral : abrir um file PGM -> ler infos do cabecalho -> contar pixeis -> calcular entropia
@@ -103,17 +103,75 @@ static int parse_positive_integer(FILE *file, size_t *value) //func para transfo
     return 1;//convertido c sucesso
 }
 
-static double entropy_from_histogram(const size_t histogram[GRAY_LEVELS],
-                                     size_t pixel_count)
+static int parse_bit_range(const char *text, unsigned *first, unsigned *last)
+{
+    char *separator = strchr(text, '-'); // antes do '-' é o first_bit e dps o second
+    if (separator == NULL || separator == text || separator[1] == '\0') {
+        return 0;
+    }
+
+    errno = 0;
+    char *end = NULL;
+    unsigned long parsed_first = strtoul(text, &end, 10);
+    if (errno != 0 || end != separator) {
+        return 0;
+    }
+
+    errno = 0;
+    unsigned long parsed_last = strtoul(separator + 1, &end, 10);
+    if (errno != 0 || end == separator + 1 || *end != '\0' ||
+        parsed_first > parsed_last || parsed_last > 15) {
+        return 0;
+    }
+
+    *first = (unsigned)parsed_first;
+    *last = (unsigned)parsed_last;
+    return 1;
+}
+
+static int read_pgm_pixels(FILE *file,
+                           uint16_t *pixels,
+                           size_t pixel_count,
+                           size_t max_value)
+{
+    for (size_t i = 0; i < pixel_count; i++) {
+        int first_byte = fgetc(file);
+        if (first_byte == EOF) {
+            return 0;
+        }
+
+        uint16_t sample = (uint16_t)first_byte;
+        if (max_value > 255) {//dois bytes por pixel
+            //big endian, 1 byte é o + significativo
+            int second_byte = fgetc(file);
+            if (second_byte == EOF) {
+                return 0;
+            }
+            sample = (uint16_t)(((uint16_t)first_byte << 8) |
+                                (uint16_t)second_byte);
+        }
+
+        if (sample > max_value) {
+            return 0;
+        }
+        pixels[i] = sample;
+    }
+
+    return 1;
+}
+
+static double entropy_from_histogram(const size_t *histogram,
+                                     size_t bin_count,
+                                     size_t sample_count)
 {
     double entropy = 0.0;
 
-    for (size_t value = 0; value < GRAY_LEVELS; value++) {
+    for (size_t value = 0; value < bin_count; value++) {
         if (histogram[value] == 0) {
             continue;//se a contagem de um val for 0 ignora
         }
 
-        double probability = (double)histogram[value] / (double)pixel_count;
+        double probability = (double)histogram[value] / (double)sample_count;
         // prob = contagem do val / total pixeis
         entropy -= probability * log2(probability);
     }
@@ -121,16 +179,225 @@ static double entropy_from_histogram(const size_t histogram[GRAY_LEVELS],
     return entropy;
 }
 
+static size_t count_horizontal_differences(const uint16_t *pixels,
+                                           size_t rows,
+                                           size_t columns,
+                                           size_t difference_offset,
+                                           size_t *histogram)
+{
+    size_t pair_count = 0;
+
+    for (size_t row = 0; row < rows; row++) {
+        for (size_t column = 1; column < columns; column++) {
+            //começa na col 1 pq a 0 n tem pixel a esquerda
+            size_t current_index = row * columns + column; //pos do pixel atual
+            size_t left_index = current_index - 1;//pos do pixel a esquerda
+            int difference = (int)pixels[current_index] -
+                             (int)pixels[left_index];//val da esquerda - val atual
+            size_t bin = (size_t)(difference + (int)difference_offset);//diferença é convertida num indice da tabela
+            histogram[bin]++;//aumenta o contador do indice da tabela q deu antes
+            pair_count++;//+ um par contado
+        }
+    }
+
+    return pair_count; //pair_count vai ser igual a rows *(columns - 1)
+}
+
+static size_t count_vertical_differences(const uint16_t *pixels,
+                                         size_t rows,
+                                         size_t columns,
+                                         size_t difference_offset,
+                                         size_t *histogram)
+{
+    size_t pair_count = 0;
+
+    for (size_t row = 1; row < rows; row++) {
+        //começa na 2 linha pq a primeira n tem nada acima
+        for (size_t column = 0; column < columns; column++) {
+            size_t current_index = row * columns + column;//pos do pixel atual
+            size_t above_index = current_index - columns;//pos do pixel de cima
+            int difference = (int)pixels[current_index] -
+                             (int)pixels[above_index];//pixel atual - pixel de cima
+            size_t bin = (size_t)(difference + (int)difference_offset);//diferença é convertida num indice da tabela
+            histogram[bin]++;//aumenta o contador do indice da tabela q deu antes
+            pair_count++;//+ um par contado
+        }
+    }
+
+    return pair_count;//pair_count vai ser igual a (rows - 1) *(columns - 1)
+}
+
+//func q devolve 1 se o total = nº esperado de pixeis
+static int histogram_count_matches(const size_t *histogram,
+                                   size_t bin_count,
+                                   size_t expected_count,
+                                   size_t *actual_count)
+{
+    size_t total = 0;
+    for (size_t value = 0; value < bin_count; value++) {
+        total += histogram[value];
+    }
+
+    *actual_count = total;
+    return total == expected_count;
+}
+
+static int write_histogram_svg(const char *input_path,
+                               const size_t *histogram,
+                               size_t bin_count,
+                               int use_bit_range,
+                               unsigned first_bit,
+                               unsigned last_bit)
+{
+    if (mkdir("out", 0777) != 0 && errno != EEXIST) {
+        perror("out");
+        return 0;
+    }
+
+    const char *base_name = strrchr(input_path, '/');
+    base_name = base_name == NULL ? input_path : base_name + 1;
+    const char *extension = strrchr(base_name, '.');
+    size_t stem_length = extension == NULL ? strlen(base_name) :
+                         (size_t)(extension - base_name);
+    size_t path_capacity = stem_length + 64;
+    char *output_path = malloc(path_capacity);
+    if (output_path == NULL) {
+        fprintf(stderr, "could not allocate memory for SVG path\n");
+        return 0;
+    }
+
+    if (use_bit_range) {
+        snprintf(output_path, path_capacity, "out/%.*s_hist_bits%u-%u.svg",
+                 (int)stem_length, base_name, first_bit, last_bit);
+    } else {
+        snprintf(output_path, path_capacity, "out/%.*s_hist.svg",
+                 (int)stem_length, base_name);
+    }
+
+    FILE *svg = fopen(output_path, "w");
+    if (svg == NULL) {
+        perror(output_path);
+        free(output_path);
+        return 0;
+    }
+
+    size_t display_bins = bin_count < 256 ? bin_count : 256;
+    size_t max_count = 0;
+    for (size_t column = 0; column < display_bins; column++) {
+        size_t first_value = column * bin_count / display_bins;
+        size_t end_value = (column + 1) * bin_count / display_bins;
+        size_t count = 0;
+        for (size_t value = first_value; value < end_value; value++) {
+            count += histogram[value];
+        }
+        if (count > max_count) {
+            max_count = count;
+        }
+    }
+
+    const double chart_x = 75.0;
+    const double chart_y = 55.0;
+    const double chart_width = 870.0;
+    const double chart_height = 370.0;
+    fprintf(svg,
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" "
+            "width=\"1000\" height=\"520\" viewBox=\"0 0 1000 520\">\n"
+            "<rect width=\"1000\" height=\"520\" fill=\"white\"/>\n"
+            "<text x=\"500\" y=\"30\" text-anchor=\"middle\" "
+            "font-family=\"sans-serif\" font-size=\"20\">"
+            "Pixel histogram</text>\n"
+            "<text x=\"20\" y=\"240\" text-anchor=\"middle\" "
+            "font-family=\"sans-serif\" font-size=\"14\" "
+            "transform=\"rotate(-90 20 240)\">Count</text>\n"
+            "<text x=\"510\" y=\"490\" text-anchor=\"middle\" "
+            "font-family=\"sans-serif\" font-size=\"14\">Pixel value</text>\n");
+
+    for (unsigned grid = 0; grid <= 4; grid++) {
+        double y = chart_y + chart_height * grid / 4.0;
+        size_t label = max_count - max_count * grid / 4;
+        fprintf(svg,
+                "<line x1=\"%.1f\" y1=\"%.1f\" x2=\"%.1f\" "
+                "y2=\"%.1f\" stroke=\"#dddddd\"/>\n"
+                "<text x=\"%.1f\" y=\"%.1f\" text-anchor=\"end\" "
+                "font-family=\"sans-serif\" font-size=\"11\">%zu</text>\n",
+                chart_x, y, chart_x + chart_width, y,
+                chart_x - 8.0, y + 4.0, label);
+    }
+
+    for (size_t column = 0; column < display_bins; column++) {
+        size_t first_value = column * bin_count / display_bins;
+        size_t end_value = (column + 1) * bin_count / display_bins;
+        size_t count = 0;
+        for (size_t value = first_value; value < end_value; value++) {
+            count += histogram[value];
+        }
+        double bar_width = chart_width / display_bins;
+        double bar_height = max_count == 0 ? 0.0 :
+                            chart_height * (double)count / (double)max_count;
+        double x = chart_x + column * bar_width;
+        double y = chart_y + chart_height - bar_height;
+        fprintf(svg,
+                "<rect x=\"%.3f\" y=\"%.3f\" width=\"%.3f\" "
+                "height=\"%.3f\" fill=\"#3976a8\"/>\n",
+                x, y, bar_width + 0.1, bar_height);
+    }
+
+    fprintf(svg,
+            "<line x1=\"%.1f\" y1=\"%.1f\" x2=\"%.1f\" "
+            "y2=\"%.1f\" stroke=\"black\"/>\n"
+            "<text x=\"%.1f\" y=\"%.1f\" text-anchor=\"middle\" "
+            "font-family=\"sans-serif\" font-size=\"11\">0</text>\n"
+            "<text x=\"%.1f\" y=\"%.1f\" text-anchor=\"middle\" "
+            "font-family=\"sans-serif\" font-size=\"11\">%zu</text>\n",
+            chart_x, chart_y + chart_height,
+            chart_x + chart_width, chart_y + chart_height,
+            chart_x, chart_y + chart_height + 18.0,
+            chart_x + chart_width, chart_y + chart_height + 18.0,
+            bin_count - 1);
+
+    if (display_bins < bin_count) {
+        fprintf(svg,
+                "<text x=\"500\" y=\"515\" text-anchor=\"middle\" "
+                "font-family=\"sans-serif\" font-size=\"11\">"
+                "Display grouped into %zu columns; calculations use exact values"
+                "</text>\n",
+                display_bins);
+    }
+    fputs("</svg>\n", svg);
+
+    int success = fclose(svg) == 0;
+    if (!success) {
+        perror(output_path);
+    } else {
+        printf("Histogram SVG: %s\n", output_path);
+    }
+    free(output_path);
+    return success;
+}
+
 int main(int argc, char **argv)
 {
-    if (argc != 2) {
-        fprintf(stderr, "Usage: %s image.pgm\n", argv[0]);
+    unsigned first_bit = 0;
+    unsigned last_bit = 0;
+    int use_bit_range = 0;
+    const char *input_path = NULL;
+
+    if (argc == 2) {
+        input_path = argv[1];
+    } else if (argc == 4 && strcmp(argv[1], "--bit-range") == 0 &&
+               parse_bit_range(argv[2], &first_bit, &last_bit)) {
+        use_bit_range = 1;
+        input_path = argv[3];
+    } else {
+        fprintf(stderr,
+                "Usage: %s [--bit-range FIRST-LAST] image.pgm\n",
+                argv[0]);
         return 2;
     }
 
-    FILE *file = fopen(argv[1], "rb");
+    FILE *file = fopen(input_path, "rb");
     if (file == NULL) {
-        perror(argv[1]);
+        perror(input_path);
         return 1;
     }
 
@@ -142,57 +409,154 @@ int main(int argc, char **argv)
         !parse_positive_integer(file, &columns) ||
         !parse_positive_integer(file, &rows) ||
         !parse_positive_integer(file, &max_value)) {
-        fprintf(stderr, "%s: invalid or unsupported PGM header\n", argv[1]);
+        fprintf(stderr, "%s: invalid or unsupported PGM header\n", input_path);
         fclose(file);
         return 1;
     }
-    if (max_value != 255) {
-        fprintf(stderr, "%s: this first version supports Maxval=255 only\n",
-                argv[1]);
+    if (max_value > 65535) {
+        fprintf(stderr, "%s: PGM Maxval cannot be greater than 65535\n",
+                input_path);
         fclose(file);
         return 1;
     }
     if (columns > SIZE_MAX / rows) {
-        fprintf(stderr, "%s: image dimensions are too large\n", argv[1]);
+        fprintf(stderr, "%s: image dimensions are too large\n", input_path);
         fclose(file);
         return 1;
     }
 
     size_t pixel_count = columns * rows;
-    uint8_t *pixels = malloc(pixel_count);
-    if (pixels == NULL) {
-        fprintf(stderr, "%s: not enough memory for the image\n", argv[1]);
+    if (pixel_count > SIZE_MAX / sizeof(uint16_t)) {
+        fprintf(stderr, "%s: image is too large to store in memory\n", input_path);
         fclose(file);
         return 1;
     }
 
-    if (fread(pixels, 1, pixel_count, file) != pixel_count) {
-        fprintf(stderr, "%s: incomplete pixel data\n", argv[1]);
+    uint16_t *pixels = malloc(pixel_count * sizeof(*pixels));
+    if (pixels == NULL) {
+        fprintf(stderr, "%s: not enough memory for the image\n", input_path);
+        fclose(file);
+        return 1;
+    }
+
+    if (!read_pgm_pixels(file, pixels, pixel_count, max_value)) {
+        fprintf(stderr, "%s: invalid or incomplete pixel data\n", input_path);
         free(pixels);
         fclose(file);
         return 1;
     }
     fclose(file);
 
-    size_t histogram[GRAY_LEVELS] = {0};
+    size_t analyzed_max = max_value;
+    if (use_bit_range) {
+        unsigned storage_bits = max_value <= 255 ? 8 : 16;
+        if (last_bit >= storage_bits) {
+            fprintf(stderr,
+                    "%s: bit range %u-%u is outside the %u-bit pixel data\n",
+                    input_path, first_bit, last_bit, storage_bits);
+            free(pixels);
+            return 1;
+        }
+
+        unsigned width = last_bit - first_bit + 1;// 0-5 -> 6
+        uint32_t mask = ((uint32_t)1 << width) - 1;//00111111 fica so 111111 se for de 0-5 o bit-range
+        for (size_t i = 0; i < pixel_count; i++) {
+            pixels[i] = (uint16_t)(((uint32_t)pixels[i] >> first_bit) & mask);
+        }
+        analyzed_max = mask;
+    }
+
+    size_t pixel_bin_count = analyzed_max + 1;
+    size_t difference_bin_count = 2 * analyzed_max + 1;
+    size_t *histogram = calloc(pixel_bin_count, sizeof(*histogram));
+    size_t *horizontal_histogram =
+        calloc(difference_bin_count, sizeof(*horizontal_histogram));
+    size_t *vertical_histogram =
+        calloc(difference_bin_count, sizeof(*vertical_histogram));
+    if (histogram == NULL || horizontal_histogram == NULL ||
+        vertical_histogram == NULL) {
+        fprintf(stderr, "%s: not enough memory for histograms\n", input_path);
+        free(pixels);
+        free(histogram);
+        free(horizontal_histogram);
+        free(vertical_histogram);
+        return 1;
+    }
+
     for (size_t i = 0; i < pixel_count; i++) {
         histogram[pixels[i]]++;
     }
 
-    printf("File: %s\n", argv[1]);
-    printf("Format: PGM P5, 8-bit grayscale\n");
+
+    //soma das contagens do histograma e comparaçao da soma com rows × columns
+    size_t histogram_total;
+    if (!histogram_count_matches(histogram, pixel_bin_count, pixel_count,
+                                 &histogram_total)) {
+        fprintf(stderr,
+                "%s: histogram contains %zu pixels, expected %zu\n",
+                input_path, histogram_total, pixel_count);
+        free(pixels);
+        free(histogram);
+        free(horizontal_histogram);
+        free(vertical_histogram);
+        return 1;
+    }
+
+    size_t horizontal_pair_count = count_horizontal_differences(
+        pixels, rows, columns, analyzed_max, horizontal_histogram);
+    size_t vertical_pair_count = count_vertical_differences(
+        pixels, rows, columns, analyzed_max, vertical_histogram);
+
+    if (!write_histogram_svg(input_path, histogram, pixel_bin_count,
+                             use_bit_range, first_bit, last_bit)) {
+        free(pixels);
+        free(histogram);
+        free(horizontal_histogram);
+        free(vertical_histogram);
+        return 1;
+    }
+
+
+    printf("File: %s\n", input_path);
+    printf("Format: PGM P5, %zu-bit grayscale\n",
+           max_value <= 255 ? (size_t)8 : (size_t)16);
     printf("Dimensions: %zu columns x %zu rows\n", columns, rows);
     printf("Maxval: %zu\n", max_value);
+    if (use_bit_range) {
+        printf("Bit range: %u-%u\n", first_bit, last_bit);
+    }
     printf("Pixels read: %zu\n", pixel_count);
+    printf("Histogram total: %zu\n", histogram_total);
+    printf("Horizontal pairs: %zu\n", horizontal_pair_count);
+    printf("Vertical pairs: %zu\n", vertical_pair_count);
     puts("\nHistogram (value: count):");
-    for (size_t value = 0; value < GRAY_LEVELS; value++) {
+    for (size_t value = 0; value < pixel_bin_count; value++) {
         if (histogram[value] != 0) {
             printf("%3zu: %zu\n", value, histogram[value]);
         }
     }
     printf("\nPixel entropy: %.6f bits/pixel\n",
-           entropy_from_histogram(histogram, pixel_count));
+           entropy_from_histogram(histogram, pixel_bin_count, pixel_count));
+    if (horizontal_pair_count == 0) {
+        puts("Horizontal difference entropy: n/a (no neighbor pairs)");
+    } else {
+        printf("Horizontal difference entropy: %.6f bits/pair\n",
+               entropy_from_histogram(horizontal_histogram,
+                                      difference_bin_count,
+                                      horizontal_pair_count));
+    }
+    if (vertical_pair_count == 0) {
+        puts("Vertical difference entropy: n/a (no neighbor pairs)");
+    } else {
+        printf("Vertical difference entropy: %.6f bits/pair\n",
+               entropy_from_histogram(vertical_histogram,
+                                      difference_bin_count,
+                                      vertical_pair_count));
+    }
 
     free(pixels);
+    free(histogram);
+    free(horizontal_histogram);
+    free(vertical_histogram);
     return 0;
 }
