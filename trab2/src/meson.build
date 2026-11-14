@@ -6,3 +6,10 @@ executable(
   dependencies: m_dep,
   install: false,
 )
+
+executable(
+  'img_hist',
+  'img_hist.c',
+  dependencies: m_dep,
+  install: false,
+)
