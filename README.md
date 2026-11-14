@@ -1,5 +1,5 @@
 
-# 💻 Information and Coding - Trabalhos Práticos
+# Information and Coding - Trabalhos Práticos
 
 ---
 
@@ -13,7 +13,7 @@
 
 ---
 
-## 📂 Trabalhos Práticos
+## Trabalhos Práticos
 
 | Trabalho | Tema | Documentação |
 |:---:|:---|:---:|
