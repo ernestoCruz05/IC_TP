@@ -52,7 +52,7 @@ static int read_pnm_token(FILE *file, char token[TOKEN_CAPACITY])
         }
         token[length++] = (char)ch;
         ch = fgetc(file);
-    } 
+    }
     //*1 -> EOF , *2 -> espaço ou mudança de linha, *3 -> inicio de comentario
     //copia os caracter para token ate encontrar *1 ou *2 ou *3
 
@@ -101,6 +101,30 @@ static int parse_positive_integer(FILE *file, size_t *value) //func para transfo
 
     *value = (size_t)parsed; 
     return 1;//convertido c sucesso
+}
+
+
+static int parse_positive_argument(const char *text, size_t *value)
+{
+    if (text[0] == '\0') {
+        return 0;
+    }
+    for (size_t i = 0; text[i] != '\0'; i++) {
+        if (!isdigit((unsigned char)text[i])) {
+            return 0;
+        }
+    }
+
+    errno = 0;
+    char *end = NULL;
+    unsigned long long parsed = strtoull(text, &end, 10);//texto -> inteiro sem sinal em decimal
+    if (errno != 0 || end == text || *end != '\0' || parsed == 0 ||
+        parsed > SIZE_MAX) {
+        return 0;
+    }
+
+    *value = (size_t)parsed;
+    return 1;
 }
 
 static int parse_bit_range(const char *text, unsigned *first, unsigned *last)
@@ -158,6 +182,39 @@ static int read_pgm_pixels(FILE *file,
     }
 
     return 1;
+}
+
+static int read_raw_pixels(FILE *file,
+                           uint16_t *pixels,
+                           size_t pixel_count,
+                           size_t bits,
+                           int big_endian)
+{
+    for (size_t i = 0; i < pixel_count; i++) {
+        int first_byte = fgetc(file);
+        if (first_byte == EOF) {
+            return 0;
+        }
+
+        if (bits == 8) {
+            pixels[i] = (uint16_t)first_byte;
+            continue;
+        }
+
+        int second_byte = fgetc(file);
+        if (second_byte == EOF) {
+            return 0;
+        }
+        if (big_endian) {
+            pixels[i] = (uint16_t)(((uint16_t)first_byte << 8) |
+                                   (uint16_t)second_byte);
+        } else {
+            pixels[i] = (uint16_t)((uint16_t)first_byte |
+                                   ((uint16_t)second_byte << 8));
+        }
+    }
+
+    return fgetc(file) == EOF && !ferror(file);
 }
 
 static double entropy_from_histogram(const size_t *histogram,
@@ -243,6 +300,7 @@ static int histogram_count_matches(const size_t *histogram,
 }
 
 static int write_histogram_svg(const char *input_path,
+                               int is_raw,
                                const size_t *histogram,
                                size_t bin_count,
                                int use_bit_range,
@@ -266,7 +324,14 @@ static int write_histogram_svg(const char *input_path,
         return 0;
     }
 
-    if (use_bit_range) {
+    if (is_raw && use_bit_range) {
+        snprintf(output_path, path_capacity,
+                 "out/%.*s_raw_hist_bits%u-%u.svg",
+                 (int)stem_length, base_name, first_bit, last_bit);
+    } else if (is_raw) {
+        snprintf(output_path, path_capacity, "out/%.*s_raw_hist.svg",
+                 (int)stem_length, base_name);
+    } else if (use_bit_range) {
         snprintf(output_path, path_capacity, "out/%.*s_hist_bits%u-%u.svg",
                  (int)stem_length, base_name, first_bit, last_bit);
     } else {
@@ -380,18 +445,95 @@ int main(int argc, char **argv)
     unsigned first_bit = 0;
     unsigned last_bit = 0;
     int use_bit_range = 0;
+    int is_raw = 0;
+    int rows_set = 0;
+    int columns_set = 0;
+    int bits_set = 0;
+    int endian_set = 0;
+    int big_endian = 0;
+    size_t raw_rows = 0;
+    size_t raw_columns = 0;
+    size_t raw_bits = 0;
     const char *input_path = NULL;
 
-    if (argc == 2) {
-        input_path = argv[1];
-    } else if (argc == 4 && strcmp(argv[1], "--bit-range") == 0 &&
-               parse_bit_range(argv[2], &first_bit, &last_bit)) {
-        use_bit_range = 1;
-        input_path = argv[3];
-    } else {
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--format") == 0 && i + 1 < argc) {
+            if (strcmp(argv[++i], "raw") != 0 || is_raw) {
+                fprintf(stderr, "%s: only --format raw is supported here\n",
+                        argv[0]);
+                return 2;
+            }
+            is_raw = 1;
+        } else if (strcmp(argv[i], "--rows") == 0 && i + 1 < argc) {
+            if (rows_set || !parse_positive_argument(argv[++i], &raw_rows)) {
+                fprintf(stderr, "%s: invalid or repeated --rows value\n",
+                        argv[0]);
+                return 2;
+            }
+            rows_set = 1;
+        } else if (strcmp(argv[i], "--cols") == 0 && i + 1 < argc) {
+            if (columns_set ||
+                !parse_positive_argument(argv[++i], &raw_columns)) {
+                fprintf(stderr, "%s: invalid or repeated --cols value\n",
+                        argv[0]);
+                return 2;
+            }
+            columns_set = 1;
+        } else if (strcmp(argv[i], "--bits") == 0 && i + 1 < argc) {
+            if (bits_set || !parse_positive_argument(argv[++i], &raw_bits)) {
+                fprintf(stderr, "%s: invalid or repeated --bits value\n",
+                        argv[0]);
+                return 2;
+            }
+            bits_set = 1;
+        } else if (strcmp(argv[i], "--endian") == 0 && i + 1 < argc) {
+            if (endian_set) {
+                fprintf(stderr, "%s: repeated --endian option\n", argv[0]);
+                return 2;
+            }
+            const char *endian = argv[++i];
+            if (strcmp(endian, "big") == 0) {
+                big_endian = 1;
+            } else if (strcmp(endian, "little") == 0) {
+                big_endian = 0;
+            } else {
+                fprintf(stderr, "%s: --endian must be big or little\n",
+                        argv[0]);
+                return 2;
+            }
+            endian_set = 1;
+        } else if (strcmp(argv[i], "--bit-range") == 0 && i + 1 < argc) {
+            if (use_bit_range ||
+                !parse_bit_range(argv[++i], &first_bit, &last_bit)) {
+                fprintf(stderr, "%s: invalid or repeated --bit-range\n",
+                        argv[0]);
+                return 2;
+            }
+            use_bit_range = 1;
+        } else if (argv[i][0] == '-') {
+            fprintf(stderr, "%s: unknown or incomplete option '%s'\n",
+                    argv[0], argv[i]);
+            return 2;
+        } else if (input_path == NULL) {
+            input_path = argv[i];
+        } else {
+            fprintf(stderr, "%s: more than one input file\n", argv[0]);
+            return 2;
+        }
+    }
+
+    if (input_path == NULL ||
+        (is_raw && (!rows_set || !columns_set || !bits_set ||
+                    (raw_bits == 16 && !endian_set) ||
+                    (raw_bits != 8 && raw_bits != 16) ||
+                    (raw_bits == 8 && endian_set))) ||
+        (!is_raw && (rows_set || columns_set || bits_set || endian_set))) {
         fprintf(stderr,
-                "Usage: %s [--bit-range FIRST-LAST] image.pgm\n",
-                argv[0]);
+                "Usage: %s [--bit-range FIRST-LAST] image.pgm\n"
+                "       %s --format raw --rows N --cols N --bits 8 image.raw\n"
+                "       %s --format raw --rows N --cols N --bits 16 "
+                "--endian big|little image.raw\n",
+                argv[0], argv[0], argv[0]);
         return 2;
     }
 
@@ -401,24 +543,28 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    char magic[TOKEN_CAPACITY];
-    size_t columns;
-    size_t rows;
-    size_t max_value;
-    if (!read_pnm_token(file, magic) || strcmp(magic, "P5") != 0 ||
-        !parse_positive_integer(file, &columns) ||
-        !parse_positive_integer(file, &rows) ||
-        !parse_positive_integer(file, &max_value)) {
-        fprintf(stderr, "%s: invalid or unsupported PGM header\n", input_path);
-        fclose(file);
-        return 1;
+    size_t columns = is_raw ? raw_columns : 0;
+    size_t rows = is_raw ? raw_rows : 0;
+    size_t max_value = is_raw ? (raw_bits == 8 ? 255 : 65535) : 0;
+    if (!is_raw) {
+        char magic[TOKEN_CAPACITY];
+        if (!read_pnm_token(file, magic) || strcmp(magic, "P5") != 0 ||
+            !parse_positive_integer(file, &columns) ||
+            !parse_positive_integer(file, &rows) ||
+            !parse_positive_integer(file, &max_value)) {
+            fprintf(stderr, "%s: invalid or unsupported PGM header\n",
+                    input_path);
+            fclose(file);
+            return 1;
+        }
+        if (max_value > 65535) {
+            fprintf(stderr, "%s: PGM Maxval cannot be greater than 65535\n",
+                    input_path);
+            fclose(file);
+            return 1;
+        }
     }
-    if (max_value > 65535) {
-        fprintf(stderr, "%s: PGM Maxval cannot be greater than 65535\n",
-                input_path);
-        fclose(file);
-        return 1;
-    }
+
     if (columns > SIZE_MAX / rows) {
         fprintf(stderr, "%s: image dimensions are too large\n", input_path);
         fclose(file);
@@ -439,8 +585,12 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    if (!read_pgm_pixels(file, pixels, pixel_count, max_value)) {
-        fprintf(stderr, "%s: invalid or incomplete pixel data\n", input_path);
+    int pixels_read = is_raw ?
+        read_raw_pixels(file, pixels, pixel_count, raw_bits, big_endian) :
+        read_pgm_pixels(file, pixels, pixel_count, max_value);
+    if (!pixels_read) {
+        fprintf(stderr, "%s: invalid, incomplete, or excess pixel data\n",
+                input_path);
         free(pixels);
         fclose(file);
         return 1;
@@ -449,7 +599,8 @@ int main(int argc, char **argv)
 
     size_t analyzed_max = max_value;
     if (use_bit_range) {
-        unsigned storage_bits = max_value <= 255 ? 8 : 16;
+        unsigned storage_bits = is_raw ? (unsigned)raw_bits :
+                                (max_value <= 255 ? 8u : 16u);
         if (last_bit >= storage_bits) {
             fprintf(stderr,
                     "%s: bit range %u-%u is outside the %u-bit pixel data\n",
@@ -507,7 +658,7 @@ int main(int argc, char **argv)
     size_t vertical_pair_count = count_vertical_differences(
         pixels, rows, columns, analyzed_max, vertical_histogram);
 
-    if (!write_histogram_svg(input_path, histogram, pixel_bin_count,
+    if (!write_histogram_svg(input_path, is_raw, histogram, pixel_bin_count,
                              use_bit_range, first_bit, last_bit)) {
         free(pixels);
         free(histogram);
@@ -518,8 +669,17 @@ int main(int argc, char **argv)
 
 
     printf("File: %s\n", input_path);
-    printf("Format: PGM P5, %zu-bit grayscale\n",
-           max_value <= 255 ? (size_t)8 : (size_t)16);
+    if (is_raw) {
+        if (raw_bits == 16) {
+            printf("Format: RAW, 16-bit grayscale, %s-endian\n",
+                   big_endian ? "big" : "little");
+        } else {
+            puts("Format: RAW, 8-bit grayscale");
+        }
+    } else {
+        printf("Format: PGM P5, %zu-bit grayscale\n",
+               max_value <= 255 ? (size_t)8 : (size_t)16);
+    }
     printf("Dimensions: %zu columns x %zu rows\n", columns, rows);
     printf("Maxval: %zu\n", max_value);
     if (use_bit_range) {
