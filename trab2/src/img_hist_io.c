@@ -178,7 +178,8 @@ int read_pgm_pixels(FILE *file,
         pixels[i] = sample;
     }
 
-    return 1;
+    // confirma que o ficheiro acaba depois dos pixels desta imagem
+    return fgetc(file) == EOF && !ferror(file);
 }
 
 int read_ppm_pixels(FILE *file,

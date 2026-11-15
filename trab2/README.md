@@ -14,6 +14,9 @@ A versão atual de `img_hist` lê PGM binário P5, PPM binário P6 e RAW. PGM e 
 aceitam `Maxval` até 65535; amostras acima de 255 são lidas em dois bytes
 big-endian. Para RAW, é preciso indicar dimensões e profundidade; para RAW de 16 bits também se indica a endianess (big-endian ou little-endian). PPM é analisado separadamente nos canais R, G e B.
 
+O programa espera uma imagem por ficheiro e rejeita dados adicionais depois
+dos pixels.
+
 O código do programa está dividido: `img_hist.c` trata dos argumentos e coordena a análise; `img_hist_io.c` lê os formatos; `histogram_stats.c` calcula histogramas, diferenças e entropias; e `histogram_svg.c` gera os gráficos. Os ficheiros `.h` correspondentes declaram as funções partilhadas.
 
 O programa apresenta o histograma e a entropia dos pixels, calcula as
