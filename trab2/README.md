@@ -10,10 +10,11 @@ organizados nesta pasta.
 
 ## `img_hist`
 
-A primeira versão de `img_hist` lê PGM binário P5 de 8 ou 16 bits e RAW de 8 ou
-16 bits. Em PGM, os pixels de 16 bits são lidos em big-endian. Para RAW, é
-preciso indicar dimensões e profundidade; para RAW de 16 bits também se indica
-a endianess (big endian ou little endian).
+A versão atual de `img_hist` lê PGM binário P5, PPM binário P6 e RAW. PGM e PPM
+aceitam `Maxval` até 65535; amostras acima de 255 são lidas em dois bytes
+big-endian. Para RAW, é preciso indicar dimensões e profundidade; para RAW de 16 bits também se indica a endianess (big-endian ou little-endian). PPM é analisado separadamente nos canais R, G e B.
+
+O código do programa está dividido: `img_hist.c` trata dos argumentos e coordena a análise; `img_hist_io.c` lê os formatos; `histogram_stats.c` calcula histogramas, diferenças e entropias; e `histogram_svg.c` gera os gráficos. Os ficheiros `.h` correspondentes declaram as funções partilhadas.
 
 O programa apresenta o histograma e a entropia dos pixels, calcula as
 entropias das diferenças entre vizinhos horizontais e verticais e cria um
@@ -33,6 +34,11 @@ meson compile -C build-trab2
 ./build-trab2/src/img_hist --bit-range 0-5 \
     trab2/dataset/imgs-pgm8/lena.pgm
 
+# PPM: cria gráficos separados e sobrepostos para R, G e B
+./build-trab2/src/img_hist trab2/dataset/imgs-ppm/lena.ppm
+./build-trab2/src/img_hist --bit-range 0-5 \
+    trab2/dataset/imgs-ppm/lena.ppm
+
 # RAW de 16 bits, big-endian; --rows e --cols são as dimensões da imagem
 ./build-trab2/src/img_hist --format raw --rows 2046 --cols 2048 \
     --bits 16 --endian big \
@@ -47,4 +53,7 @@ Para um intervalo de bits RAW, acrescenta `--bit-range`, por exemplo,
 `--bit-range 0-5`. Os gráficos incluem `_raw_` no nome, como
 `out/ERIS.2024-01-01T06:15:12.592_u16be-1x2046x2048_raw_hist.svg`; os gráficos
 PGM são guardados, por exemplo, em `out/lena_hist.svg` e
-`out/lena_hist_bits0-5.svg`. 
+`out/lena_hist_bits0-5.svg`. Para PPM são criados `out/lena_ppm_hist_channels.svg`
+e `out/lena_ppm_hist_overlay.svg`, com `bits0-5` acrescentado ao nome quando
+se usa `--bit-range`. PPM P6 com `Maxval` entre 256 e 65535 usa dois bytes
+big-endian por componente.
