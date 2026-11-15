@@ -60,3 +60,15 @@ PGM são guardados, por exemplo, em `out/lena_hist.svg` e
 e `out/lena_ppm_hist_overlay.svg`, com `bits0-5` acrescentado ao nome quando
 se usa `--bit-range`. PPM P6 com `Maxval` entre 256 e 65535 usa dois bytes
 big-endian por componente.
+
+## `img_quant`
+
+Quantização escalar uniforme: reduz cada pixel (ou canal, em PPM) a `BITS`
+bits e escreve a imagem no formato da entrada. Cada amostra fica com o valor
+central do seu intervalo. Para RAW usam-se as mesmas opções de `img_hist`.
+
+```sh
+./build-trab2/src/img_quant -b 3 trab2/dataset/imgs-pgm8/lena.pgm lena_q3.pgm
+./build-trab2/src/img_quant -b 4 --format raw --rows 480 --cols 640 \
+    --bits 8 imagem.raw imagem_q4.raw
+```

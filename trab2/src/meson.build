@@ -18,3 +18,12 @@ executable(
   dependencies: m_dep,
   install: false,
 )
+
+executable(
+  'img_quant',
+  [
+    'img_quant.c',
+    'img_hist_io.c',
+  ],
+  install: false,
+)

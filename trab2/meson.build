@@ -14,3 +14,8 @@ cc = meson.get_compiler('c')
 m_dep = cc.find_library('m', required: false)
 
 subdir('src')
+
+fs = import('fs')
+if fs.is_dir('.dev/tests')
+  subdir('.dev/tests')
+endif
