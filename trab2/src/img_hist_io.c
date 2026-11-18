@@ -254,3 +254,93 @@ int read_raw_pixels(FILE *file,
 
     return fgetc(file) == EOF && !ferror(file);
 }
+
+void img_free(IMAGE *image)
+{
+    for (size_t channel = 0; channel < 3; channel++) {
+        free(image->pixels[channel]);
+        image->pixels[channel] = NULL;
+    }
+}
+
+int img_load(const char *path, int is_raw, size_t raw_rows,
+             size_t raw_columns, size_t raw_bits, int big_endian,
+             IMAGE *image)
+{
+    memset(image, 0, sizeof *image);
+    image->channel_count = 1;
+    image->columns = is_raw ? raw_columns : 0;
+    image->rows = is_raw ? raw_rows : 0;
+    image->max_value = is_raw ? (raw_bits == 8 ? 255 : 65535) : 0;
+
+    FILE *file = fopen(path, "rb");
+    if (file == NULL) {
+        perror(path);
+        return 0;
+    }
+
+    if (!is_raw) {
+        char magic[TOKEN_CAPACITY];
+        if (!read_pnm_token(file, magic) ||
+            (strcmp(magic, "P5") != 0 && strcmp(magic, "P6") != 0) ||
+            !parse_positive_integer(file, &image->columns) ||
+            !parse_positive_integer(file, &image->rows) ||
+            !parse_positive_integer(file, &image->max_value)) {
+            fprintf(stderr, "%s: invalid or unsupported PGM/PPM header\n",
+                    path);
+            fclose(file);
+            return 0;
+        }
+        image->is_ppm = strcmp(magic, "P6") == 0;
+        image->channel_count = image->is_ppm ? 3 : 1;
+        if (image->max_value > 65535) {
+            fprintf(stderr, "%s: Maxval above 65535 is not supported\n", path);
+            fclose(file);
+            return 0;
+        }
+    }
+
+    if (image->columns > SIZE_MAX / image->rows) {
+        fprintf(stderr, "%s: image dimensions are too large\n", path);
+        fclose(file);
+        return 0;
+    }
+
+    size_t pixel_count = image->columns * image->rows;
+    if (pixel_count > SIZE_MAX / sizeof(uint16_t) ||
+        pixel_count > SIZE_MAX / image->channel_count) {
+        fprintf(stderr, "%s: image is too large to store in memory\n", path);
+        fclose(file);
+        return 0;
+    }
+
+    for (size_t channel = 0; channel < image->channel_count; channel++) {
+        image->pixels[channel] = malloc(pixel_count * sizeof(uint16_t));
+        if (image->pixels[channel] == NULL) {
+            fprintf(stderr, "%s: not enough memory for image channels\n", path);
+            img_free(image);
+            fclose(file);
+            return 0;
+        }
+    }
+
+    int ok;
+    if (is_raw) {
+        ok = read_raw_pixels(file, image->pixels[0], pixel_count, raw_bits,
+                             big_endian);
+    } else if (image->is_ppm) {
+        ok = read_ppm_pixels(file, image->pixels[0], image->pixels[1],
+                             image->pixels[2], pixel_count, image->max_value);
+    } else {
+        ok = read_pgm_pixels(file, image->pixels[0], pixel_count,
+                             image->max_value);
+    }
+    fclose(file);
+    if (!ok) {
+        fprintf(stderr, "%s: invalid, incomplete, or excess pixel data\n",
+                path);
+        img_free(image);
+        return 0;
+    }
+    return 1;
+}

@@ -72,3 +72,18 @@ central do seu intervalo. Para RAW usam-se as mesmas opções de `img_hist`.
 ./build-trab2/src/img_quant -b 4 --format raw --rows 480 --cols 640 \
     --bits 8 imagem.raw imagem_q4.raw
 ```
+
+## `img_cmp`
+
+Compara duas imagens com o mesmo tipo, dimensões e `Maxval`, calculando o erro
+máximo absoluto, o MSE e o PSNR em dB (por canal e global no caso PPM). Para
+imagens RAW usam-se as mesmas opções de `img_hist`, podendo usar `--orig-raw` ou
+`--test-raw` quando apenas uma das imagens é RAW.
+
+```sh
+./build-trab2/src/img_cmp trab2/dataset/imgs-pgm8/lena.pgm lena_q3.pgm
+./build-trab2/src/img_cmp --format raw --rows 480 --cols 640 --bits 8 \
+    imagem.raw imagem_q4.raw
+./build-trab2/src/img_cmp --test-raw --rows 512 --cols 512 --bits 8 \
+    trab2/dataset/imgs-pgm8/lena.pgm lena.raw
+```

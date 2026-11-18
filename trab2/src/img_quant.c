@@ -141,39 +141,20 @@ int main(int argc, char **argv)
         return 2;
     }
 
-    int result = 1;
-    FILE *output = NULL;
-    uint16_t *pixels[3] = {NULL, NULL, NULL};
-    FILE *file = fopen(input_path, "rb");
-    if (file == NULL) {
-        perror(input_path);
+    IMAGE image;
+    if (!img_load(input_path, is_raw, raw_rows, raw_columns, raw_bits,
+                  big_endian, &image)) {
         return 1;
     }
 
-    int is_ppm = 0;
-    size_t channel_count = 1;
-    size_t columns = is_raw ? raw_columns : 0;
-    size_t rows = is_raw ? raw_rows : 0;
-    size_t max_value = is_raw ? (raw_bits == 8 ? 255 : 65535) : 0;
-    if (!is_raw) {
-        char magic[TOKEN_CAPACITY];
-        if (!read_pnm_token(file, magic) ||
-            (strcmp(magic, "P5") != 0 && strcmp(magic, "P6") != 0) ||
-            !parse_positive_integer(file, &columns) ||
-            !parse_positive_integer(file, &rows) ||
-            !parse_positive_integer(file, &max_value)) {
-            fprintf(stderr, "%s: invalid or unsupported PGM/PPM header\n",
-                    input_path);
-            goto cleanup;
-        }
-        is_ppm = strcmp(magic, "P6") == 0;
-        channel_count = is_ppm ? 3 : 1;
-        if (max_value > 65535) {
-            fprintf(stderr, "%s: Maxval above 65535 is not supported\n",
-                    input_path);
-            goto cleanup;
-        }
-    }
+    int result = 1;
+    FILE *output = NULL;
+    int is_ppm = image.is_ppm;
+    size_t channel_count = image.channel_count;
+    size_t columns = image.columns;
+    size_t rows = image.rows;
+    size_t max_value = image.max_value;
+    size_t pixel_count = columns * rows;
 
     unsigned source_bits = sample_bits(max_value);
     if (quant_bits >= source_bits) {
@@ -183,42 +164,12 @@ int main(int argc, char **argv)
         goto cleanup;
     }
 
-    if (columns > SIZE_MAX / rows ||
-        columns * rows > SIZE_MAX / sizeof(uint16_t)) {
-        fprintf(stderr, "%s: image dimensions are too large\n", input_path);
-        goto cleanup;
-    }
-
-    size_t pixel_count = columns * rows;
-    for (size_t channel = 0; channel < channel_count; channel++) {
-        pixels[channel] = malloc(pixel_count * sizeof(*pixels[channel]));
-        if (pixels[channel] == NULL) {
-            fprintf(stderr, "%s: not enough memory for image channels\n",
-                    input_path);
-            goto cleanup;
-        }
-    }
-
-    int pixels_read;
-    if (is_raw) {
-        pixels_read = read_raw_pixels(file, pixels[0], pixel_count,
-                                      raw_bits, big_endian);
-    } else if (is_ppm) {
-        pixels_read = read_ppm_pixels(file, pixels[0], pixels[1], pixels[2],
-                                      pixel_count, max_value);
-    } else {
-        pixels_read = read_pgm_pixels(file, pixels[0], pixel_count, max_value);
-    }
-    if (!pixels_read) {
-        fprintf(stderr, "%s: invalid, incomplete, or excess pixel data\n",
-                input_path);
-        goto cleanup;
-    }
-
     for (size_t channel = 0; channel < channel_count; channel++) {
         for (size_t i = 0; i < pixel_count; i++) {
-            pixels[channel][i] = quant_sample(pixels[channel][i], source_bits,
-                                              (unsigned)quant_bits, max_value);
+            image.pixels[channel][i] = quant_sample(image.pixels[channel][i],
+                                                    source_bits,
+                                                    (unsigned)quant_bits,
+                                                    max_value);
         }
     }
 
@@ -232,8 +183,9 @@ int main(int argc, char **argv)
                     fprintf(output, "%s\n%zu %zu\n%zu\n", is_ppm ? "P6" : "P5",
                             columns, rows, max_value) > 0;
     int pixels_ok = header_ok &&
-                    write_pixels(output, pixels, channel_count, pixel_count,
-                                 max_value > 255, is_raw ? big_endian : 1);
+                    write_pixels(output, image.pixels, channel_count,
+                                 pixel_count, max_value > 255,
+                                 is_raw ? big_endian : 1);
     int close_ok = fclose(output) == 0;
     output = NULL;
     if (!pixels_ok || !close_ok) {
@@ -247,9 +199,6 @@ cleanup:
     if (output != NULL) {
         fclose(output);
     }
-    fclose(file);
-    for (size_t channel = 0; channel < channel_count; channel++) {
-        free(pixels[channel]);
-    }
+    img_free(&image);
     return result;
 }

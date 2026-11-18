@@ -27,3 +27,13 @@ executable(
   ],
   install: false,
 )
+
+executable(
+  'img_cmp',
+  [
+    'img_cmp.c',
+    'img_hist_io.c',
+  ],
+  dependencies: m_dep,
+  install: false,
+)

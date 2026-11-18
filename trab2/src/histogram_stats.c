@@ -66,7 +66,7 @@ size_t count_vertical_differences(const uint16_t *pixels,
         }
     }
 
-    return pair_count;//pair_count vai ser igual a (rows - 1) *(columns - 1)
+    return pair_count;//pair_count vai ser igual a (rows - 1) * columns
 }
 
 //func q devolve 1 se o total = nº esperado de pixeis
