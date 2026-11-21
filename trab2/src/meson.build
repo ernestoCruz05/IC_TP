@@ -37,3 +37,22 @@ executable(
   dependencies: m_dep,
   install: false,
 )
+
+executable(
+  'img_lossless_enc',
+  [
+    'img_lossless_enc.c',
+    'img_hist_io.c',
+    'bitstream.c',
+  ],
+  install: false,
+)
+
+executable(
+  'img_lossless_dec',
+  [
+    'img_lossless_dec.c',
+    'bitstream.c',
+  ],
+  install: false,
+)
